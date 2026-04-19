@@ -147,47 +147,132 @@ func (s *Screener) ClassifyDebug(from string) (Category, string) {
 
 // Approve adds addr to screened_in.txt and removes it from all conflicting lists.
 func (s *Screener) Approve(from string) error {
-	_ = s.removeFromList(s.cfg.ScreenedOut, s.screenedOut, from)
-	_ = s.removeFromList(s.cfg.Feed, s.feed, from)
-	_ = s.removeFromList(s.cfg.PaperTrail, s.paperTrail, from)
-	_ = s.removeFromList(s.cfg.Spam, s.spam, from)
-	return s.addToList(s.cfg.ScreenedIn, s.screenedIn, from)
+	snap := s.Snapshot()
+	if err := s.removeFromList(s.cfg.ScreenedOut, s.screenedOut, from); err != nil {
+		s.Restore(snap)
+		return err
+	}
+	if err := s.removeFromList(s.cfg.Feed, s.feed, from); err != nil {
+		s.Restore(snap)
+		return err
+	}
+	if err := s.removeFromList(s.cfg.PaperTrail, s.paperTrail, from); err != nil {
+		s.Restore(snap)
+		return err
+	}
+	if err := s.removeFromList(s.cfg.Spam, s.spam, from); err != nil {
+		s.Restore(snap)
+		return err
+	}
+	if err := s.addToList(s.cfg.ScreenedIn, s.screenedIn, from); err != nil {
+		s.Restore(snap)
+		return err
+	}
+	return nil
 }
 
 // Block adds addr to screened_out.txt and removes it from all conflicting lists.
 func (s *Screener) Block(from string) error {
-	_ = s.removeFromList(s.cfg.ScreenedIn, s.screenedIn, from)
-	_ = s.removeFromList(s.cfg.Feed, s.feed, from)
-	_ = s.removeFromList(s.cfg.PaperTrail, s.paperTrail, from)
-	_ = s.removeFromList(s.cfg.Spam, s.spam, from)
-	return s.addToList(s.cfg.ScreenedOut, s.screenedOut, from)
+	snap := s.Snapshot()
+	if err := s.removeFromList(s.cfg.ScreenedIn, s.screenedIn, from); err != nil {
+		s.Restore(snap)
+		return err
+	}
+	if err := s.removeFromList(s.cfg.Feed, s.feed, from); err != nil {
+		s.Restore(snap)
+		return err
+	}
+	if err := s.removeFromList(s.cfg.PaperTrail, s.paperTrail, from); err != nil {
+		s.Restore(snap)
+		return err
+	}
+	if err := s.removeFromList(s.cfg.Spam, s.spam, from); err != nil {
+		s.Restore(snap)
+		return err
+	}
+	if err := s.addToList(s.cfg.ScreenedOut, s.screenedOut, from); err != nil {
+		s.Restore(snap)
+		return err
+	}
+	return nil
 }
 
 // MarkSpam adds addr to spam.txt and removes it from all conflicting lists.
 func (s *Screener) MarkSpam(from string) error {
-	_ = s.removeFromList(s.cfg.ScreenedIn, s.screenedIn, from)
-	_ = s.removeFromList(s.cfg.ScreenedOut, s.screenedOut, from)
-	_ = s.removeFromList(s.cfg.Feed, s.feed, from)
-	_ = s.removeFromList(s.cfg.PaperTrail, s.paperTrail, from)
-	return s.addToList(s.cfg.Spam, s.spam, from)
+	snap := s.Snapshot()
+	if err := s.removeFromList(s.cfg.ScreenedIn, s.screenedIn, from); err != nil {
+		s.Restore(snap)
+		return err
+	}
+	if err := s.removeFromList(s.cfg.ScreenedOut, s.screenedOut, from); err != nil {
+		s.Restore(snap)
+		return err
+	}
+	if err := s.removeFromList(s.cfg.Feed, s.feed, from); err != nil {
+		s.Restore(snap)
+		return err
+	}
+	if err := s.removeFromList(s.cfg.PaperTrail, s.paperTrail, from); err != nil {
+		s.Restore(snap)
+		return err
+	}
+	if err := s.addToList(s.cfg.Spam, s.spam, from); err != nil {
+		s.Restore(snap)
+		return err
+	}
+	return nil
 }
 
 // MarkFeed adds addr to feed.txt and removes it from all conflicting lists.
 func (s *Screener) MarkFeed(from string) error {
-	_ = s.removeFromList(s.cfg.ScreenedIn, s.screenedIn, from)
-	_ = s.removeFromList(s.cfg.ScreenedOut, s.screenedOut, from)
-	_ = s.removeFromList(s.cfg.PaperTrail, s.paperTrail, from)
-	_ = s.removeFromList(s.cfg.Spam, s.spam, from)
-	return s.addToList(s.cfg.Feed, s.feed, from)
+	snap := s.Snapshot()
+	if err := s.removeFromList(s.cfg.ScreenedIn, s.screenedIn, from); err != nil {
+		s.Restore(snap)
+		return err
+	}
+	if err := s.removeFromList(s.cfg.ScreenedOut, s.screenedOut, from); err != nil {
+		s.Restore(snap)
+		return err
+	}
+	if err := s.removeFromList(s.cfg.PaperTrail, s.paperTrail, from); err != nil {
+		s.Restore(snap)
+		return err
+	}
+	if err := s.removeFromList(s.cfg.Spam, s.spam, from); err != nil {
+		s.Restore(snap)
+		return err
+	}
+	if err := s.addToList(s.cfg.Feed, s.feed, from); err != nil {
+		s.Restore(snap)
+		return err
+	}
+	return nil
 }
 
 // MarkPaperTrail adds addr to papertrail.txt and removes it from all conflicting lists.
 func (s *Screener) MarkPaperTrail(from string) error {
-	_ = s.removeFromList(s.cfg.ScreenedIn, s.screenedIn, from)
-	_ = s.removeFromList(s.cfg.ScreenedOut, s.screenedOut, from)
-	_ = s.removeFromList(s.cfg.Feed, s.feed, from)
-	_ = s.removeFromList(s.cfg.Spam, s.spam, from)
-	return s.addToList(s.cfg.PaperTrail, s.paperTrail, from)
+	snap := s.Snapshot()
+	if err := s.removeFromList(s.cfg.ScreenedIn, s.screenedIn, from); err != nil {
+		s.Restore(snap)
+		return err
+	}
+	if err := s.removeFromList(s.cfg.ScreenedOut, s.screenedOut, from); err != nil {
+		s.Restore(snap)
+		return err
+	}
+	if err := s.removeFromList(s.cfg.Feed, s.feed, from); err != nil {
+		s.Restore(snap)
+		return err
+	}
+	if err := s.removeFromList(s.cfg.Spam, s.spam, from); err != nil {
+		s.Restore(snap)
+		return err
+	}
+	if err := s.addToList(s.cfg.PaperTrail, s.paperTrail, from); err != nil {
+		s.Restore(snap)
+		return err
+	}
+	return nil
 }
 
 func cloneSet(src map[string]bool) map[string]bool {
