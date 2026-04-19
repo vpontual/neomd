@@ -63,7 +63,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Run initial screening immediately
+	// Run initial screening immediately (if screener lists are not empty)
 	d.logger.Info("running initial screening")
 	if err := d.screenInbox(ctx); err != nil {
 		d.logger.Error("initial screening failed", "error", err)
@@ -159,6 +159,13 @@ func (d *Daemon) reloadScreener() error {
 
 // screenInbox fetches inbox emails and screens them.
 func (d *Daemon) screenInbox(ctx context.Context) error {
+	// Skip screening if screener lists are empty (mirrors TUI behavior)
+	// This prevents sweeping all unknown senders to ToScreen on first run
+	if d.screener.IsEmpty() {
+		d.logger.Info("screening paused: screener lists are empty (classify your first sender to activate)")
+		return nil
+	}
+
 	inboxFolder := d.cfg.Folders.Inbox
 
 	// Fetch inbox headers (0 means fetch all)

@@ -69,6 +69,72 @@ func TestRun_InvalidInterval(t *testing.T) {
 // Note: Full integration test of Run() requires a real IMAP server
 // This is tested manually and in integration tests
 
+func TestScreenInbox_EmptyScreenerLists(t *testing.T) {
+	tmpDir := t.TempDir()
+	listDir := filepath.Join(tmpDir, "lists")
+	if err := os.MkdirAll(listDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create empty screener list files (first-run scenario)
+	for _, name := range []string{"screened_in.txt", "screened_out.txt", "feed.txt", "papertrail.txt", "spam.txt"} {
+		if err := os.WriteFile(filepath.Join(listDir, name), []byte{}, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg := config.Config{
+		UI: config.UIConfig{
+			BgSyncInterval: 5,
+		},
+		Folders: config.FoldersConfig{
+			Inbox:       "INBOX",
+			ToScreen:    "ToScreen",
+			ScreenedOut: "ScreenedOut",
+			Feed:        "Feed",
+			PaperTrail:  "PaperTrail",
+			Spam:        "Spam",
+			Trash:       "Trash",
+		},
+		Screener: config.ScreenerConfig{
+			ScreenedIn:  filepath.Join(listDir, "screened_in.txt"),
+			ScreenedOut: filepath.Join(listDir, "screened_out.txt"),
+			Feed:        filepath.Join(listDir, "feed.txt"),
+			PaperTrail:  filepath.Join(listDir, "papertrail.txt"),
+			Spam:        filepath.Join(listDir, "spam.txt"),
+		},
+	}
+
+	sc, err := screener.New(screener.Config{
+		ScreenedIn:  cfg.Screener.ScreenedIn,
+		ScreenedOut: cfg.Screener.ScreenedOut,
+		Feed:        cfg.Screener.Feed,
+		PaperTrail:  cfg.Screener.PaperTrail,
+		Spam:        cfg.Screener.Spam,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify screener is empty
+	if !sc.IsEmpty() {
+		t.Fatal("expected screener to be empty")
+	}
+
+	d := New(cfg, &imap.Client{}, sc)
+
+	// screenInbox should return early without attempting to fetch/move emails
+	err = d.screenInbox(context.Background())
+	if err != nil {
+		t.Fatalf("screenInbox failed with empty lists: %v", err)
+	}
+
+	// This test verifies that:
+	// 1. No IMAP operations are attempted (would fail with nil client)
+	// 2. The function returns nil (success/no-op)
+	// 3. Mirrors TUI behavior of pausing screening when lists are empty
+}
+
 func TestReloadScreener(t *testing.T) {
 	tmpDir := t.TempDir()
 	listDir := filepath.Join(tmpDir, "lists")
