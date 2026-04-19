@@ -143,8 +143,20 @@ docs-build:
 docs-clean:
 	$(MAKE) -C docs clean
 
-sync-headless:
-	scp neomd-freebsd ti:~/neomd
+## sync-headless: deploy FreeBSD binary to ti server and restart daemon
+sync-headless: build
+	@echo "Copying binary and Makefile to ti..."
+	scp neomd-freebsd ti:~/.local/bin/neomd
+	scp scripts/headless-server/Makefile ti:~/Makefile
+	@echo "Restarting daemon..."
+	ssh ti "pkill neomd || true; sleep 2; mkdir -p ~/.local/share/neomd; nohup ~/.local/bin/neomd --headless >> ~/.local/share/neomd/daemon.log 2>&1 &"
+	@echo "Waiting for daemon to start..."
+	@sleep 2
+	@echo "Checking status..."
+	@ssh ti "ps aux | grep '[n]eomd' || echo 'ERROR: neomd is not running'"
+	@echo ""
+	@echo "Checking logs for errors..."
+	@ssh ti "tail -20 ~/.local/share/neomd/daemon.log"
 
 ## help: print this list
 help:
