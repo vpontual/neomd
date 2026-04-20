@@ -5,13 +5,7 @@ weight: 0
 
 A minimal terminal email client for people who write in Markdown and live in Neovim.
 
-[Neomd](https://www.ssp.sh/brain/neomd/) is my way of implementing an email TUI based on my experience with Neomutt, focusing on [Neovim](https://www.ssp.sh/brain/neovim) (input) and reading/writing in [Markdown](https://www.ssp.sh/brain/markdown) and navigating with [Vim Motions](https://www.ssp.sh/brain/vim-language-and-motions) with the GTD workflow and [HEY-Screener](https://www.hey.com/features/the-screener/).
-
-
-{{< callout type="warning" >}}
-neomd moves, deletes, and modifies emails directly on your IMAP server. These operations affect your mailbox across all devices. **Back up important emails before first use.** neomd is experimental software and can't take responsibility for lost or misplaced emails. Consider testing with a secondary email account first.
-{{< /callout >}}
-
+*Neomd is my way of implementing an email TUI based on my experience with Neomutt, focusing on [Neovim](https://www.ssp.sh/brain/neovim) (input) and reading/writing in [Markdown](https://www.ssp.sh/brain/markdown) and navigating with [Vim Motions](https://www.ssp.sh/brain/vim-language-and-motions) with the GTD workflow and [HEY-Screener](https://www.hey.com/features/the-screener/).*
 
 ## The philosophy behind Neomd: What's unique?
 
@@ -24,10 +18,6 @@ With the [GTD approach](https://www.ssp.sh/brain/getting-things-done-gtd), using
 Also, we intentionally don't add more folders to the archive or file emails too, only archive (and work if you use business/personal - but that's not even needed). The goal is to let emails fade out, avoid the "busy work," and file them. We use search when we need it, or copy important information into Obsidian or our daily work. That's why we only have limited folders (and also why we currently can't add additional ones; see [FAQ](https://ssp-data.github.io/neomd/docs/faq/#is-it-possible-to-create-new-directoriestabs).
 
 But we have two additional **Feed** and **Papertrail**, two dedicated folders from HEY where you can read newsletters (just hit F) on them automatically in their separate tab, or move all your receipts into the Papertrail. Once you mark them as feed or papertrail, they will moved there automatically going forward. So you decide whether to read emails or news by jumping to different tabs.
-
-{{< callout type="info" >}}
-neomd's **speed** depends entirely on your IMAP provider. On Hostpoint (the provider I use), a folder switch takes **~33ms** which feels instant. On Gmail, the same operation takes **~570ms** which is noticeably slow. See [Benchmark](#benchmark) for full details and how to test your provider.
-{{< /callout >}}
 
 
 ### Email Processing Workflow
@@ -82,10 +72,10 @@ flowchart TD
 *all colored boxes represent neomd folders*
 
 **Key principles:**
-- **Screener first**: Unknown senders never clutter your Inbox — they wait in ToScreen for classification [[more](https://ssp-data.github.io/neomd/docs/screener/)]
+- **Screener first**: Unknown senders never clutter your Inbox, but get automatically wait in ToScreen for classification [[more](https://ssp-data.github.io/neomd/docs/screener/)]
 - **One-time decision**: Once you classify a sender (`I/O/F/P`), all future emails from them are automatically routed [[more](https://ssp-data.github.io/neomd/docs/screener/#how-classification-works)]
-- **GTD processing**: Emails in Inbox are processed once — if < 2 min, do it or keep it in inbox as doing *Next* otherwise move to Waiting, Someday, or Scheduled 
-- **Minimal filing**: Only Archive when done; no complex folder hierarchies — use search to find old emails 
+- **GTD processing**: Emails in Inbox are processed once. Inbox acting as want/need to do *Next*, otherwise move to Waiting, Someday, or Scheduled 
+- **Minimal filing**: Only Archive when done; no complex folder hierarchies. Use search to find old emails 
 - **Separate contexts**: Feed for newsletters (read when you want), PaperTrail for receipts (search when needed) 
 - See full features list below.
 
@@ -170,9 +160,19 @@ Or in Gmail:
 - **Kanagawa theme** — colors from the [kanagawa.nvim](https://github.com/rebelot/kanagawa.nvim) palette
 - **IMAP + SMTP** — direct connection via RFC 6851 MOVE, no local sync daemon required and keeps it in sync if you use it on mobile or different device [[more](https://ssp-data.github.io/neomd/docs/configuration/)]
 
+{{< callout type="info" >}}
+neomd's **speed** depends entirely on your IMAP provider. On Hostpoint (the provider I use), a folder switch takes **~33ms** which feels instant. On Gmail, the same operation takes **~570ms** which is noticeably slow. See [Benchmark](#benchmark) for full details and how to test your provider.
+{{< /callout >}}
+
+
 ## Install
 
 **Prerequisites:** [Go 1.22+](https://go.dev/doc/install) and `make`.
+
+{{< callout type="warning" >}}
+neomd moves, deletes, and modifies emails directly on your IMAP server. These operations affect your mailbox across all devices. **Back up important emails before first use.** neomd is experimental software and can't take responsibility for lost or misplaced emails. Consider testing with a secondary email account first.
+{{< /callout >}}
+
 
 {{< callout type="info" >}}
 **Optional attachment helpers:**
@@ -318,6 +318,9 @@ make help     print this list
 - [goldmark](https://github.com/yuin/goldmark) — Markdown → HTML for sending
 - [BurntSushi/toml](https://github.com/BurntSushi/toml) — config parsing
 
+
+## FAQ
+You have more questions, check out the [docs](https://ssp-data.github.io/neomd/) with more information, or check [Frequently Asked Questions](https://ssp-data.github.io/neomd/docs/faq/).
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for what's new.
