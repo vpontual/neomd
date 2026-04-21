@@ -779,6 +779,152 @@ func TestIntegration_MarkAsRead(t *testing.T) {
 	t.Logf("Mark-as-read round-trip successful: UID=%d", email.UID)
 }
 
+func TestIntegration_EmailStandardsCompliance(t *testing.T) {
+	env := loadEnv(t)
+	cli := env.imapClient()
+	defer cli.Close()
+
+	subject := uniqueSubject("standards-check")
+	body := "Testing RFC 5322 email standards compliance.\n\nThis email validates:\n- Message-ID uses sender's domain\n- multipart/alternative structure\n- Proper MIME encoding"
+
+	// Build the message to inspect its structure before sending
+	raw, err := smtp.BuildMessage(env.from, env.user, "", subject, body, nil, "")
+	if err != nil {
+		t.Fatalf("BuildMessage: %v", err)
+	}
+
+	rawStr := string(raw)
+
+	// 1. Message-ID MUST use sender's domain (not @neomd or @localhost)
+	msgIDIdx := strings.Index(rawStr, "Message-ID:")
+	if msgIDIdx == -1 {
+		t.Fatal("Message-ID header missing")
+	}
+	msgIDLine := rawStr[msgIDIdx : msgIDIdx+strings.Index(rawStr[msgIDIdx:], "\n")]
+
+	// Extract domain from From address for validation
+	fromAddr := extractUser(env.from)
+	if fromAddr == "" {
+		fromAddr = env.user
+	}
+	domainIdx := strings.LastIndex(fromAddr, "@")
+	if domainIdx == -1 {
+		t.Fatalf("Cannot extract domain from From: %s", fromAddr)
+	}
+	expectedDomain := fromAddr[domainIdx+1:]
+
+	if !strings.Contains(msgIDLine, "@"+expectedDomain+">") {
+		t.Errorf("Message-ID should use sender's domain @%s, got: %s", expectedDomain, msgIDLine)
+	}
+	if strings.Contains(msgIDLine, "@neomd>") {
+		t.Errorf("Message-ID should not use hardcoded @neomd, got: %s", msgIDLine)
+	}
+	if strings.Contains(msgIDLine, "@localhost>") {
+		t.Errorf("Message-ID should not use @localhost fallback, got: %s", msgIDLine)
+	}
+	t.Logf("✓ Message-ID uses sender's domain: %s", msgIDLine)
+
+	// 2. Required RFC 5322 headers
+	requiredHeaders := []string{
+		"From:",
+		"To:",
+		"Subject:",
+		"Date:",
+		"Message-ID:",
+		"MIME-Version:",
+		"Content-Type:",
+		"X-Mailer:",
+	}
+	for _, hdr := range requiredHeaders {
+		if !strings.Contains(rawStr, hdr) {
+			t.Errorf("Required header missing: %s", hdr)
+		}
+	}
+	t.Logf("✓ All required headers present")
+
+	// 3. Verify multipart/alternative structure
+	if !strings.Contains(rawStr, "Content-Type: multipart/alternative") {
+		t.Error("Expected multipart/alternative content type")
+	}
+	t.Logf("✓ Uses multipart/alternative structure")
+
+	// 4. Verify text/plain comes before text/html (RFC 2046 requirement)
+	plainIdx := strings.Index(rawStr, "Content-Type: text/plain")
+	htmlIdx := strings.Index(rawStr, "Content-Type: text/html")
+	if plainIdx == -1 {
+		t.Error("text/plain part missing")
+	}
+	if htmlIdx == -1 {
+		t.Error("text/html part missing")
+	}
+	if plainIdx >= htmlIdx {
+		t.Errorf("text/plain must come before text/html (RFC 2046), got plain at %d, html at %d", plainIdx, htmlIdx)
+	}
+	t.Logf("✓ Correct part ordering: text/plain first, text/html second")
+
+	// 5. Verify quoted-printable encoding is used
+	if !strings.Contains(rawStr, "Content-Transfer-Encoding: quoted-printable") {
+		t.Error("Expected quoted-printable encoding")
+	}
+	t.Logf("✓ Uses quoted-printable encoding")
+
+	// 6. Verify X-Mailer header identifies neomd
+	if !strings.Contains(rawStr, "X-Mailer: neomd") {
+		t.Error("X-Mailer header should identify 'neomd'")
+	}
+	t.Logf("✓ X-Mailer header present")
+
+	// 7. Verify BCC header is NOT present (RFC 5322 privacy requirement)
+	if strings.Contains(rawStr, "\nBcc:") || strings.HasPrefix(rawStr, "Bcc:") {
+		t.Error("BCC header should never appear in message headers")
+	}
+	t.Logf("✓ BCC header correctly excluded")
+
+	// 8. Verify HTML part is valid (contains basic tags)
+	if !strings.Contains(rawStr, "<!DOCTYPE html>") {
+		t.Error("HTML part missing DOCTYPE declaration")
+	}
+	if !strings.Contains(rawStr, "<body>") || !strings.Contains(rawStr, "</body>") {
+		t.Error("HTML part missing body tags")
+	}
+	t.Logf("✓ HTML part is well-formed")
+
+	// Now actually send the email to verify end-to-end delivery
+	err = smtp.Send(env.smtpConfig(), env.user, "", "", subject, body, nil)
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	// Wait for delivery and verify it arrives correctly
+	email := waitForEmail(t, cli, "INBOX", subject, 30*time.Second)
+	defer cleanupEmail(t, cli, "INBOX", email.UID)
+
+	// Fetch body to verify content survived delivery
+	ctx := context.Background()
+	markdown, rawHTML, _, _, _, err := cli.FetchBody(ctx, "INBOX", email.UID)
+	if err != nil {
+		t.Fatalf("FetchBody: %v", err)
+	}
+
+	if !strings.Contains(markdown, "RFC 5322") {
+		t.Errorf("Plain text part missing expected content after delivery, got: %s", truncate(markdown, 200))
+	}
+	t.Logf("✓ Plain text part is readable after delivery")
+
+	if !strings.Contains(rawHTML, "<!DOCTYPE html>") {
+		t.Error("HTML part missing DOCTYPE after delivery")
+	}
+	t.Logf("✓ HTML part survived delivery intact")
+
+	t.Log("\n=== Email Standards Compliance: ALL CHECKS PASSED ===")
+	t.Logf("Message-ID: Uses sender's domain @%s", expectedDomain)
+	t.Log("Headers: All required headers present")
+	t.Log("MIME: multipart/alternative with correct ordering")
+	t.Log("Encoding: quoted-printable")
+	t.Log("Privacy: BCC correctly excluded")
+	t.Log("Delivery: Email sent and received successfully")
+}
+
 // --- Helpers ---
 
 func extractUser(from string) string {

@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"mime"
 	"net"
+	"net/mail"
 	"net/smtp"
 	"os"
 	"path/filepath"
@@ -361,6 +362,12 @@ func buildMessage(from, to, cc, subject, plainText, htmlBody string, attachments
 }
 
 func buildMessageWithBCC(from, to, cc, bcc, subject, plainText, htmlBody string, attachments []string, inReplyTo, references string) ([]byte, error) {
+	// Validate From address can be parsed successfully
+	domain, ok := extractDomain(from)
+	if !ok {
+		return nil, fmt.Errorf("invalid From address %q: cannot parse address for Message-ID (ensure address format is valid)", from)
+	}
+
 	// Find local image paths in htmlBody (<img src="/abs/path">), assign CIDs.
 	var inlines []inlineImage
 	processedHTML := imgSrcRe.ReplaceAllStringFunc(htmlBody, func(match string) string {
@@ -397,7 +404,7 @@ func buildMessageWithBCC(from, to, cc, bcc, subject, plainText, htmlBody string,
 		}
 		hdr("Subject", mime.QEncoding.Encode("utf-8", subject))
 		hdr("Date", time.Now().Format(time.RFC1123Z))
-		hdr("Message-ID", "<"+msgID+"@neomd>")
+		hdr("Message-ID", "<"+msgID+"@"+domain+">")
 		// Threading headers for replies
 		if inReplyTo != "" {
 			hdr("In-Reply-To", inReplyTo)
@@ -428,7 +435,7 @@ func buildMessageWithBCC(from, to, cc, bcc, subject, plainText, htmlBody string,
 		}
 		hdr("Subject", mime.QEncoding.Encode("utf-8", subject))
 		hdr("Date", time.Now().Format(time.RFC1123Z))
-		hdr("Message-ID", "<"+msgID+"@neomd>")
+		hdr("Message-ID", "<"+msgID+"@"+domain+">")
 		// Threading headers for replies
 		if inReplyTo != "" {
 			hdr("In-Reply-To", inReplyTo)
@@ -460,7 +467,7 @@ func buildMessageWithBCC(from, to, cc, bcc, subject, plainText, htmlBody string,
 		}
 		hdr("Subject", mime.QEncoding.Encode("utf-8", subject))
 		hdr("Date", time.Now().Format(time.RFC1123Z))
-		hdr("Message-ID", "<"+msgID+"@neomd>")
+		hdr("Message-ID", "<"+msgID+"@"+domain+">")
 		hdr("MIME-Version", "1.0")
 		hdr("Content-Type", `multipart/mixed; boundary="`+mixedBoundary+`"`)
 		hdr("X-Mailer", "neomd")
@@ -697,4 +704,41 @@ func extractAddr(s string) string {
 		}
 	}
 	return s
+}
+
+// extractDomain extracts the domain part from a "Name <user@domain>" or "user@domain" address.
+// Returns "localhost" as a safe fallback if no valid domain is found, though this should never
+// happen in practice since the From address always comes from validated config.toml accounts.
+//
+// This is used for generating RFC-compliant Message-IDs with the sender's domain.
+// RFC 5322 recommends (but does not require) that Message-IDs contain a fully qualified
+// domain name controlled by the sender. Using the sender's domain ensures:
+//   - Better spam filter compatibility
+//   - Proper email threading across clients
+//   - Domain reputation consistency
+//
+// Uses net/mail.ParseAddress for RFC 5322 compliant parsing.
+//
+// Examples:
+//   "Simon Späti <simon@ssp.sh>" → "ssp.sh"
+//   "alice@example.com"           → "example.com"
+//   "invalid"                     → "localhost" (should never happen)
+func extractDomain(from string) (string, bool) {
+	// Use net/mail for RFC 5322 compliant address parsing
+	addr, err := mail.ParseAddress(strings.TrimSpace(from))
+	if err != nil {
+		// Parsing failed - invalid From address
+		return "localhost", false
+	}
+
+	// Extract domain from the parsed address (user@domain)
+	if idx := strings.LastIndex(addr.Address, "@"); idx >= 0 && idx < len(addr.Address)-1 {
+		domain := addr.Address[idx+1:]
+		if domain != "" {
+			return domain, true
+		}
+	}
+
+	// Parsed but no domain found (e.g., bare username without @)
+	return "localhost", false
 }

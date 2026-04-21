@@ -159,6 +159,7 @@ Or in Gmail:
 - **Headless daemon mode** — run `neomd --headless` on a server to continuously screen emails in the background without the TUI; watches screener list files for changes via Syncthing; emails are auto-screened every `bg_sync_interval` minutes so mobile apps see correctly filtered IMAP folders; perfect for running on a NAS while using the TUI on laptop/Android [[more](https://ssp-data.github.io/neomd/docs/configurations/headless/)]
 - **Kanagawa theme** — colors from the [kanagawa.nvim](https://github.com/rebelot/kanagawa.nvim) palette
 - **IMAP + SMTP** — direct connection via RFC 6851 MOVE, no local sync daemon required and keeps it in sync if you use it on mobile or different device [[more](https://ssp-data.github.io/neomd/docs/configuration/)]
+- **RFC 5322 compliant email delivery** — Message-IDs use sender's domain, proper MIME multipart/alternative structure (text/plain before text/html), quoted-printable encoding, and all required headers; ensures deliverability across all providers, spam filter compatibility, and correct email threading [[more](https://ssp-data.github.io/neomd/docs/configurations/email-standards/)]
 
 {{< callout type="info" >}}
 neomd's **speed** depends entirely on your IMAP provider. On Hostpoint (the provider I use), a folder switch takes **~33ms** which feels instant. On Gmail, the same operation takes **~570ms** which is noticeably slow. See [Benchmark](#benchmark) for full details and how to test your provider.

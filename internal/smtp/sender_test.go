@@ -289,9 +289,17 @@ func TestBuildMessage_Headers(t *testing.T) {
 		t.Error("Date header missing")
 	}
 
-	// Message-ID must be present
-	if msg.Header.Get("Message-Id") == "" {
+	// Message-ID must be present and use the sender's domain
+	msgID := msg.Header.Get("Message-Id")
+	if msgID == "" {
 		t.Error("Message-ID header missing")
+	}
+	// Message-ID should contain @example.com (sender's domain), not @neomd
+	if !strings.Contains(msgID, "@example.com>") {
+		t.Errorf("Message-ID should contain sender's domain @example.com, got: %s", msgID)
+	}
+	if strings.Contains(msgID, "@neomd>") {
+		t.Errorf("Message-ID should not contain hardcoded @neomd, got: %s", msgID)
 	}
 }
 
@@ -343,6 +351,85 @@ func TestBuildMessage_NoBccInHeaders(t *testing.T) {
 	}
 }
 
+func TestBuildMessage_InvalidFrom(t *testing.T) {
+	// Test that buildMessage rejects invalid From addresses that would result in @localhost Message-IDs
+	invalidFromAddresses := []string{
+		"invalid",              // no @ sign
+		"user@",                // @ at end
+		"",                     // empty
+		"@domain.com",          // no user part
+		"user domain.com",      // missing @
+	}
+
+	for _, from := range invalidFromAddresses {
+		t.Run(from, func(t *testing.T) {
+			_, err := buildMessage(
+				from,
+				"bob@example.com",
+				"",
+				"Test",
+				"body",
+				"<p>body</p>",
+				nil,
+			)
+			if err == nil {
+				t.Fatalf("buildMessage should fail for invalid From %q, but succeeded", from)
+			}
+			if !strings.Contains(err.Error(), "invalid From address") {
+				t.Errorf("error should mention 'invalid From address', got: %v", err)
+			}
+		})
+	}
+
+	// Also test BuildMessageWithThreading and BuildReactionMessage paths
+	t.Run("BuildMessageWithThreading", func(t *testing.T) {
+		_, err := BuildMessageWithThreading(
+			"invalid",
+			"bob@example.com",
+			"",
+			"Test",
+			"body",
+			nil, // attachments
+			"",  // htmlSignature
+			"<msg@example.com>",
+			"<ref@example.com>",
+		)
+		if err == nil {
+			t.Error("BuildMessageWithThreading should fail for invalid From")
+		}
+	})
+
+	t.Run("BuildReactionMessage", func(t *testing.T) {
+		_, err := BuildReactionMessage(
+			"invalid",
+			"bob@example.com",
+			"",
+			"Re: Test",
+			"👍",
+			"<msg@example.com>",
+			"<ref@example.com>",
+		)
+		if err == nil {
+			t.Error("BuildReactionMessage should fail for invalid From")
+		}
+	})
+
+	t.Run("BuildDraftMessage", func(t *testing.T) {
+		_, err := BuildDraftMessage(
+			"invalid",
+			"bob@example.com",
+			"",
+			"",
+			"Test",
+			"body",
+			nil,
+		)
+		if err == nil {
+			t.Error("BuildDraftMessage should fail for invalid From")
+		}
+	})
+}
+
 func TestExtractAddr(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -381,6 +468,82 @@ func TestExtractAddr(t *testing.T) {
 			got := extractAddr(tt.input)
 			if got != tt.want {
 				t.Errorf("extractAddr(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractDomain(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		want   string
+		wantOk bool
+	}{
+		{
+			name:   "name and angle brackets",
+			input:  "Simon Späti <simon@ssp.sh>",
+			want:   "ssp.sh",
+			wantOk: true,
+		},
+		{
+			name:   "bare address",
+			input:  "alice@example.com",
+			want:   "example.com",
+			wantOk: true,
+		},
+		{
+			name:   "subdomain",
+			input:  "Bob <bob@mail.company.org>",
+			want:   "mail.company.org",
+			wantOk: true,
+		},
+		{
+			name:   "with leading space",
+			input:  "  test@domain.net",
+			want:   "domain.net",
+			wantOk: true,
+		},
+		{
+			name:   "angle brackets no name",
+			input:  "<user@test.io>",
+			want:   "test.io",
+			wantOk: true,
+		},
+		{
+			name:   "localhost is valid",
+			input:  "user@localhost",
+			want:   "localhost",
+			wantOk: true,
+		},
+		{
+			name:   "empty string fallback",
+			input:  "",
+			want:   "localhost",
+			wantOk: false,
+		},
+		{
+			name:   "no @ sign fallback",
+			input:  "invalid",
+			want:   "localhost",
+			wantOk: false,
+		},
+		{
+			name:   "@ at end fallback",
+			input:  "user@",
+			want:   "localhost",
+			wantOk: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := extractDomain(tt.input)
+			if got != tt.want {
+				t.Errorf("extractDomain(%q) domain = %q, want %q", tt.input, got, tt.want)
+			}
+			if ok != tt.wantOk {
+				t.Errorf("extractDomain(%q) ok = %v, want %v", tt.input, ok, tt.wantOk)
 			}
 		})
 	}
@@ -447,6 +610,15 @@ Explore: [Website](https://ssp.sh/) | [Vault](https://vault.ssp.sh/) | [Book](ht
 	if strings.Contains(bodyStr, "<p>") || strings.Contains(bodyStr, "<strong>") {
 		t.Error("draft body contains HTML tags - should be plain text only")
 	}
+
+	// Verify Message-ID uses sender's domain (not @neomd or @localhost)
+	msgID := msg.Header.Get("Message-ID")
+	if !strings.Contains(msgID, "@sspaeti.com>") {
+		t.Errorf("Draft Message-ID should contain sender's domain @sspaeti.com, got: %s", msgID)
+	}
+	if strings.Contains(msgID, "@neomd>") || strings.Contains(msgID, "@localhost>") {
+		t.Errorf("Draft Message-ID should not contain @neomd or @localhost, got: %s", msgID)
+	}
 }
 
 func TestBuildDraftMessage_WithAttachment(t *testing.T) {
@@ -495,6 +667,15 @@ func TestBuildDraftMessage_WithAttachment(t *testing.T) {
 	ct1, _, _ := mime.ParseMediaType(part1.Header.Get("Content-Type"))
 	if ct1 != "text/plain" {
 		t.Errorf("attachment content-type: expected text/plain, got %s", ct1)
+	}
+
+	// Verify Message-ID uses sender's domain (not @neomd or @localhost)
+	msgID := msg.Header.Get("Message-ID")
+	if !strings.Contains(msgID, "@example.com>") {
+		t.Errorf("Draft Message-ID should contain sender's domain @example.com, got: %s", msgID)
+	}
+	if strings.Contains(msgID, "@neomd>") || strings.Contains(msgID, "@localhost>") {
+		t.Errorf("Draft Message-ID should not contain @neomd or @localhost, got: %s", msgID)
 	}
 }
 
@@ -772,6 +953,15 @@ func TestBuildReactionMessage_ThreadingHeaders(t *testing.T) {
 	}
 	if !foundHTML {
 		t.Error("Missing text/html part")
+	}
+
+	// Verify Message-ID uses sender's domain (not @neomd or @localhost)
+	msgID := msg.Header.Get("Message-ID")
+	if !strings.Contains(msgID, "@example.com>") {
+		t.Errorf("Reaction Message-ID should contain sender's domain @example.com, got: %s", msgID)
+	}
+	if strings.Contains(msgID, "@neomd>") || strings.Contains(msgID, "@localhost>") {
+		t.Errorf("Reaction Message-ID should not contain @neomd or @localhost, got: %s", msgID)
 	}
 }
 
