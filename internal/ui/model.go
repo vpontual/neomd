@@ -3884,12 +3884,18 @@ func (m Model) launchReplyWithCC(extraCC string, replyAll bool) (tea.Model, tea.
 
 	cc := ""
 	if replyAll {
-		// Collect original To + CC, exclude own address
-		own := strings.ToLower(extractEmailAddr(m.activeAccount().User))
+		// Collect original To + CC, exclude all own addresses
+		ownAddrs := make(map[string]bool)
+		for _, from := range m.presendFroms() {
+			ownAddrs[strings.ToLower(extractEmailAddr(from))] = true
+		}
 		var parts []string
 		for _, addr := range splitAddrs(e.To + "," + e.CC) {
-			if a := strings.TrimSpace(addr); a != "" && strings.ToLower(extractEmailAddr(a)) != own {
-				parts = append(parts, a)
+			if a := strings.TrimSpace(addr); a != "" {
+				addrLower := strings.ToLower(extractEmailAddr(a))
+				if !ownAddrs[addrLower] {
+					parts = append(parts, a)
+				}
 			}
 		}
 		cc = strings.Join(parts, ", ")
