@@ -1,6 +1,7 @@
 # Changelog
 
 # 2026-04-21
+- **Fix: potential memory leak in background sync** — fixed infinite loop that occurred when IMAP errors (e.g., after suspend/resume) triggered immediate retry instead of waiting for next scheduled interval; `bgFetchInboxCmd()` now returns nil on error instead of `bgSyncTickMsg{}`, preventing tight loop that consumes large amounts of RAM; added `bgSyncInProgress` flag to prevent concurrent background syncs from piling up during slow network conditions
 - **Fix: reply-all excludes all own addresses** — `ctrl+r` reply-all now excludes all configured email addresses (accounts + sender aliases) from the CC field; previously only excluded the active account's address, causing your own email to appear in CC when the original email was sent to one of your other addresses
 
 # 2026-04-18

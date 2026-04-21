@@ -490,6 +490,9 @@ type Model struct {
 	pendingReply    bool
 	pendingReplyAll bool
 
+	// bgSyncInProgress prevents concurrent background syncs from piling up
+	bgSyncInProgress bool
+
 	// Chord prefix: "g" or "M" while waiting for second key
 	pendingKey string
 
@@ -1434,7 +1437,9 @@ func (m Model) bgFetchInboxCmd() tea.Cmd {
 		m.imapCli().ResetMailboxSelection() // force fresh SELECT to see new messages
 		emails, err := m.imapCli().FetchHeaders(nil, m.cfg.Folders.Inbox, m.cfg.UI.InboxCount)
 		if err != nil {
-			return bgSyncTickMsg{} // reschedule retry on next tick instead of errMsg
+			// Return nil to let the next scheduled tick retry naturally.
+			// Returning bgSyncTickMsg{} here creates an infinite loop on persistent errors!
+			return bgInboxFetchedMsg{emails: nil} // signal completion even on error
 		}
 		return bgInboxFetchedMsg{emails: emails}
 	}
@@ -1949,10 +1954,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.activeFolder()))
 
 	case bgSyncTickMsg:
+		// Skip if a background sync is already in progress to prevent pileup.
+		if m.bgSyncInProgress {
+			return m, m.scheduleBgSync() // just reschedule the next tick
+		}
 		// Fire background inbox fetch; reschedule next tick in parallel.
+		m.bgSyncInProgress = true
 		return m, tea.Batch(m.bgFetchInboxCmd(), m.scheduleBgSync())
 
 	case bgInboxFetchedMsg:
+		m.bgSyncInProgress = false // clear flag regardless of success/failure
+		if msg.emails == nil {
+			// Error case (network down, etc.) - silently skip until next tick
+			return m, nil
+		}
 		if err := m.validateScreenerSafety(); err != nil {
 			m.status = err.Error()
 			m.isError = true
