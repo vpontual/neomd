@@ -125,7 +125,7 @@ Or in Gmail:
 ### Video
 
   YouTube rundown of most features:
-  [![neomd demo](https://img.youtube.com/vi/lpmHqIrCC-w/maxresdefault.jpg)(https://youtu.be/8aKkldYLWV8)
+  [![neomd demo](https://img.youtube.com/vi/lpmHqIrCC-w/maxresdefault.jpg)](https://youtu.be/8aKkldYLWV8)
 *(shorter but limited showcase [part 1 video](https://youtu.be/lpmHqIrCC-w))*
 
 
