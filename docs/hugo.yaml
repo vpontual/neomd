@@ -12,6 +12,7 @@ canonifyURLs: true
 disableKinds: ["RSS"]
 
 # import hextra as module
+# Hextra v0.12.2 is the latest version as of 2026-04-21.
 module:
   imports:
     - path: github.com/imfing/hextra

@@ -266,5 +266,5 @@ The scopes required depends on the provider and is better confirmed by your emai
 
 ### Reference documentation for GMAIL and Office365
 
-- To enable OAuth2 authentication for Office365 accounts, follow the documentation [here]("https://outlook.office365.com/IMAP.AccessAsUser.All", "offline_access")
+- To enable OAuth2 authentication for Office365 accounts, follow the documentation [here](https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth)
 - For GMAIL, follow the documentation [here](https://developers.google.com/workspace/gmail/imap/xoauth2-protocol)
