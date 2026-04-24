@@ -2784,7 +2784,8 @@ func (m *Model) applyFilter() tea.Cmd {
 		filtered = m.emails
 	}
 
-	return setEmails(&m.inbox, filtered, m.markedUIDs, m.shouldPrefixFolderInSubject(), m.sortField, m.sortReverse)
+	noThread := len(m.folders) > 0 && m.activeFolder() == m.cfg.Folders.Sent
+	return setEmails(&m.inbox, filtered, m.markedUIDs, m.shouldPrefixFolderInSubject(), m.sortField, m.sortReverse, noThread)
 }
 
 // handleChord dispatches two-key sequences (g<x>, M<x>, space<x>).

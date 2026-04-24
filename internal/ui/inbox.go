@@ -238,8 +238,13 @@ func newInboxList(width, height int, sentFolder, draftFolder string) list.Model 
 // It threads emails before display — grouped conversations appear together
 // with tree-drawing prefixes (┌─>) on reply rows.
 // Sorting respects the user's chosen sortField and sortReverse preferences.
-func setEmails(l *list.Model, emails []imap.Email, marked map[uint32]bool, prefixFolders bool, sortField string, sortReverse bool) tea.Cmd {
-	threaded := threadEmails(emails, sortField, sortReverse)
+func setEmails(l *list.Model, emails []imap.Email, marked map[uint32]bool, prefixFolders bool, sortField string, sortReverse bool, disableThreading bool) tea.Cmd {
+	var threaded []threadedEmail
+	if disableThreading {
+		threaded = flatEmails(emails, sortField, sortReverse)
+	} else {
+		threaded = threadEmails(emails, sortField, sortReverse)
+	}
 	items := make([]list.Item, len(threaded))
 	for i, te := range threaded {
 		displaySubj := te.email.Subject

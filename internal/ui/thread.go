@@ -94,6 +94,22 @@ type threadedEmail struct {
 	threadPrefix string // "│" = continuation, "╰" = root, "" = not threaded
 }
 
+// flatEmails returns emails sorted without any threading/grouping.
+func flatEmails(emails []imap.Email, sortField string, sortReverse bool) []threadedEmail {
+	result := make([]threadedEmail, len(emails))
+	for i, e := range emails {
+		result[i] = threadedEmail{email: e}
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		cmp := compareEmails(result[i].email, result[j].email, sortField)
+		if sortReverse {
+			return cmp > 0
+		}
+		return cmp < 0
+	})
+	return result
+}
+
 // threadEmails groups and reorders emails into threaded display order.
 //
 // Threading uses two strategies:
