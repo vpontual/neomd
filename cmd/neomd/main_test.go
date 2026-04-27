@@ -1,6 +1,8 @@
 package main
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestInferIMAPSecurity(t *testing.T) {
 	tests := []struct {
@@ -74,5 +76,66 @@ func TestInferIMAPSecurity(t *testing.T) {
 				t.Errorf("%s: got STARTTLS=%v, want STARTTLS=%v", tt.description, gotSTARTTLS, tt.wantSTARTTLS)
 			}
 		})
+	}
+}
+
+func TestParseMailtoQuery_PlusPreserved(t *testing.T) {
+	tests := []struct {
+		name     string
+		raw      string
+		key      string
+		want     string
+	}{
+		{
+			name: "plus in cc address",
+			raw:  "cc=alice%2Bnews@example.com",
+			key:  "cc",
+			want: "alice+news@example.com",
+		},
+		{
+			name: "literal plus not decoded as space",
+			raw:  "subject=a+b+c",
+			key:  "subject",
+			want: "a+b+c",
+		},
+		{
+			name: "percent-encoded space",
+			raw:  "subject=hello%20world",
+			key:  "subject",
+			want: "hello world",
+		},
+		{
+			name: "multiple params with plus",
+			raw:  "cc=a%2Bb@x.com&subject=re%3A+test",
+			key:  "cc",
+			want: "a+b@x.com",
+		},
+		{
+			name: "empty query",
+			raw:  "",
+			key:  "cc",
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := parseMailtoQuery(tt.raw)
+			got := q(tt.key)
+			if got != tt.want {
+				t.Errorf("parseMailtoQuery(%q)(%q) = %q, want %q", tt.raw, tt.key, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseMailto_PlusInAddress(t *testing.T) {
+	params := parseMailto("mailto:user@example.com?cc=alice%2Bnews@example.com&subject=a+b")
+	if params.CC != "alice+news@example.com" {
+		t.Errorf("CC = %q, want %q", params.CC, "alice+news@example.com")
+	}
+	// '+' in subject should stay literal, not become space
+	if params.Subject != "a+b" {
+		t.Errorf("Subject = %q, want %q", params.Subject, "a+b")
 	}
 }

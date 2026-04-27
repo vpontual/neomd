@@ -189,14 +189,39 @@ func parseMailto(raw string) *ui.MailtoParams {
 	if decoded, err := url.PathUnescape(to); err == nil {
 		to = decoded
 	}
-	q := u.Query()
+	// Parse query manually: url.Query() decodes '+' as space, but in
+	// mailto: URIs '+' is a literal character (RFC 6068).
+	q := parseMailtoQuery(u.RawQuery)
 	return &ui.MailtoParams{
 		To:      to,
-		CC:      q.Get("cc"),
-		BCC:     q.Get("bcc"),
-		Subject: q.Get("subject"),
-		Body:    q.Get("body"),
+		CC:      q("cc"),
+		BCC:     q("bcc"),
+		Subject: q("subject"),
+		Body:    q("body"),
 	}
+}
+
+// parseMailtoQuery parses a raw query string using PathUnescape (not
+// QueryUnescape) so that literal '+' characters are preserved per RFC 6068.
+func parseMailtoQuery(raw string) func(string) string {
+	m := make(map[string]string)
+	for _, pair := range strings.Split(raw, "&") {
+		if pair == "" {
+			continue
+		}
+		k, v, _ := strings.Cut(pair, "=")
+		if dk, err := url.PathUnescape(k); err == nil {
+			k = dk
+		}
+		if dv, err := url.PathUnescape(v); err == nil {
+			v = dv
+		}
+		k = strings.ToLower(k)
+		if _, exists := m[k]; !exists {
+			m[k] = v
+		}
+	}
+	return func(key string) string { return m[key] }
 }
 
 func inferIMAPSecurity(port string, userSTARTTLS bool) (useTLS, useSTARTTLS bool) {
