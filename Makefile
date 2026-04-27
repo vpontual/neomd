@@ -35,7 +35,7 @@ run: build
 	./$(BINARY) $(ARGS)
 
 ## install: install to ~/.local/bin
-install: build
+install: docs build
 	install -Dm755 $(BINARY) $(INSTALL)/$(BINARY)
 	@echo "Installed to $(INSTALL)/$(BINARY)"
 
