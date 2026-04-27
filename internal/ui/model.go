@@ -3175,7 +3175,7 @@ func (m Model) openInBrowser() (tea.Model, tea.Cmd) {
 
 	var htmlBody string
 	if m.openHTMLBody != "" {
-		htmlBody = render.InjectCSP(m.openHTMLBody)
+		htmlBody = m.openHTMLBody
 	} else {
 		var err error
 		htmlBody, err = render.ToHTML(m.openBody)
@@ -3252,7 +3252,7 @@ func (m Model) openInW3m() (tea.Model, tea.Cmd) {
 
 	var htmlBody string
 	if m.openHTMLBody != "" {
-		htmlBody = render.InjectCSP(m.openHTMLBody)
+		htmlBody = m.openHTMLBody
 	} else {
 		var err error
 		htmlBody, err = render.ToHTML(m.openBody)

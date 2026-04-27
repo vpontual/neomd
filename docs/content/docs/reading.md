@@ -40,7 +40,7 @@ When tracking pixels are detected, neomd shows:
 - `⊙` indicator in the inbox list (orange, next to the attachment `@` column)
 - `⊙ N spy pixel(s) blocked (domain.com)` in the reader header with tracker domains
 
-The browser view (`O`) also blocks remote images via a Content-Security-Policy header, so tracking pixels are blocked even when viewing the full HTML version.
+When you press `O` to open in the browser, remote images load normally — you're explicitly choosing to see the full email. Tracking pixel blocking is a TUI-level protection.
 
 ### This is how it looks:
 

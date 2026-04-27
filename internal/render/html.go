@@ -20,7 +20,6 @@ const htmlTemplate = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src file: data: cid:; font-src 'none';">
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.6;color:#333;margin:0;padding:8px 16px;text-align:left}
 a{color:#3150AA;text-decoration:underline}
@@ -60,28 +59,6 @@ var md = goldmark.New(
 	),
 	goldmark.WithRendererOptions(html.WithHardWraps()),
 )
-
-// cspMeta is the Content-Security-Policy meta tag injected into all browser views.
-// Blocks remote images (tracking pixels), scripts, and fonts.
-const cspMeta = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src file: data: cid:; font-src 'none';">`
-
-// InjectCSP inserts a CSP meta tag into an HTML document for safe browser viewing.
-// If the document has a <head>, the tag is inserted after it. Otherwise it's prepended.
-func InjectCSP(html string) string {
-	if idx := strings.Index(strings.ToLower(html), "<head>"); idx >= 0 {
-		insert := idx + len("<head>")
-		return html[:insert] + "\n" + cspMeta + html[insert:]
-	}
-	if idx := strings.Index(strings.ToLower(html), "<html"); idx >= 0 {
-		// Find the end of the <html...> tag
-		end := strings.IndexByte(html[idx:], '>')
-		if end >= 0 {
-			insert := idx + end + 1
-			return html[:insert] + "<head>" + cspMeta + "</head>" + html[insert:]
-		}
-	}
-	return cspMeta + "\n" + html
-}
 
 // ToHTML converts a Markdown string to a complete HTML email document.
 func ToHTML(markdown string) (string, error) {

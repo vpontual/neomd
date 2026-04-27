@@ -89,10 +89,9 @@ neomd automatically detects and blocks tracking pixels (1x1 invisible images emb
 - The inbox list shows a `⊙` indicator (orange) for emails that contained tracking pixels, visible after first read.
 - The reader header shows `⊙ N spy pixel(s) blocked (domain.com, ...)` with the tracker domains.
 
-**Browser view (`O`) protection:**
-- The HTML template includes a `Content-Security-Policy` meta tag that restricts image sources to `file:`, `data:`, and `cid:` only. Remote images (including tracking pixels) are blocked even when viewing the full HTML version in a browser.
+**Browser view (`O`):** When you explicitly open an email in the browser, remote images are loaded — this is intentional, as you're choosing to see the full email. Tracking pixels are only blocked in the TUI.
 
-**Code:** [`internal/imap/client.go`](https://github.com/ssp-data/neomd/blob/main/internal/imap/client.go) — `cleanMarkdown()`, `SpyPixelInfo` · [`internal/render/html.go`](https://github.com/ssp-data/neomd/blob/main/internal/render/html.go) — `htmlTemplate` (CSP) · [`internal/ui/inbox.go`](https://github.com/ssp-data/neomd/blob/main/internal/ui/inbox.go) — `⊙` indicator · [`internal/ui/reader.go`](https://github.com/ssp-data/neomd/blob/main/internal/ui/reader.go) — `renderEmailHeader()`
+**Code:** [`internal/imap/client.go`](https://github.com/ssp-data/neomd/blob/main/internal/imap/client.go) — `detectSpyPixels()`, `SpyPixelInfo` · [`internal/ui/inbox.go`](https://github.com/ssp-data/neomd/blob/main/internal/ui/inbox.go) — `⊙` indicator · [`internal/ui/reader.go`](https://github.com/ssp-data/neomd/blob/main/internal/ui/reader.go) — `renderEmailHeader()`
 
 ---
 
