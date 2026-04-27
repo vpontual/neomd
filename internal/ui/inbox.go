@@ -248,7 +248,12 @@ func newInboxList(width, height int, sentFolder, draftFolder string) list.Model 
 // It threads emails before display — grouped conversations appear together
 // with tree-drawing prefixes (┌─>) on reply rows.
 // Sorting respects the user's chosen sortField and sortReverse preferences.
-func setEmails(l *list.Model, emails []imap.Email, marked, spyPixels map[uint32]bool, prefixFolders bool, sortField string, sortReverse bool, disableThreading bool) tea.Cmd {
+// spyPixelKey returns a unique cache key for spy pixel tracking across folders.
+func spyPixelKey(folder string, uid uint32) string {
+	return folder + "\x00" + fmt.Sprintf("%d", uid)
+}
+
+func setEmails(l *list.Model, emails []imap.Email, marked map[uint32]bool, spyPixels map[string]bool, prefixFolders bool, sortField string, sortReverse bool, disableThreading bool) tea.Cmd {
 	var threaded []threadedEmail
 	if disableThreading {
 		threaded = flatEmails(emails, sortField, sortReverse)
@@ -267,7 +272,7 @@ func setEmails(l *list.Model, emails []imap.Email, marked, spyPixels map[uint32]
 			marked:       marked[te.email.UID],
 			displaySubj:  displaySubj,
 			threadPrefix: te.threadPrefix,
-			hasSpyPixel:  spyPixels[te.email.UID],
+			hasSpyPixel:  spyPixels[spyPixelKey(te.email.Folder, te.email.UID)],
 		}
 	}
 	return l.SetItems(items)

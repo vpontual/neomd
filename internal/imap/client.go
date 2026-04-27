@@ -1201,6 +1201,9 @@ func injectCIDAlt(html string, cidToName map[string]string) string {
 // it with proper formatting: bold, italic, links, headings, lists, and image
 // placeholders (![alt](url) → [Image: alt] in the terminal).
 func htmlToMarkdown(h string) (string, SpyPixelInfo) {
+	// Detect spy pixels on raw HTML before conversion (size/visibility heuristics).
+	spy := detectSpyPixels(h)
+
 	// Remove <wbr> tags and join newlines inside href/src attribute values.
 	// Newsletter services (Substack, Mailchimp) insert line breaks inside URLs
 	// for HTML rendering; html-to-markdown preserves them, breaking link syntax.
@@ -1219,44 +1222,96 @@ func htmlToMarkdown(h string) (string, SpyPixelInfo) {
 	converter := htmlmd.NewConverter("", true, nil)
 	result, err := converter.ConvertString(h)
 	if err != nil {
-		return stripHTMLFallback(h), SpyPixelInfo{}
+		return stripHTMLFallback(h), spy
 	}
-	return cleanMarkdown(strings.TrimSpace(result))
+	return cleanMarkdown(strings.TrimSpace(result)), spy
 }
 
 // SpyPixelInfo holds the results of tracking pixel detection.
+// SpyPixelInfo holds the results of tracking pixel detection.
 type SpyPixelInfo struct {
-	Count   int      // number of tracking pixels stripped
+	Count   int      // number of tracking pixels detected
 	Domains []string // unique tracker domains extracted from pixel URLs
+}
+
+// reSpyPixel matches <img> tags that look like tracking pixels in raw HTML:
+// - empty or whitespace-only alt attribute
+// - AND at least one of: width/height of 0 or 1, display:none, visibility:hidden,
+//   or known tracker URL patterns (track/open, pixel, beacon).
+// This avoids false positives on legitimate decorative images or image-only buttons.
+var reSpyPixel = regexp.MustCompile(`(?i)<img\b[^>]*\bsrc="(https?://[^"]+)"[^>]*>`)
+
+// isSpyPixel checks if an <img> tag is a tracking pixel based on heuristics.
+func isSpyPixel(tag string) bool {
+	// Must have empty or missing alt to be considered a tracker.
+	// Match alt="non-empty-content" — if present, it's a real image.
+	hasNonEmptyAlt := regexp.MustCompile(`(?i)\balt=["'][^"']+["']`).MatchString(tag)
+	if hasNonEmptyAlt {
+		return false
+	}
+	// Check size heuristics: width="1", height="1", width="0", height="0"
+	if regexp.MustCompile(`(?i)\b(?:width|height)=["']?[01](?:px)?["']?`).MatchString(tag) {
+		return true
+	}
+	// Check CSS hiding: display:none, visibility:hidden
+	if regexp.MustCompile(`(?i)(?:display\s*:\s*none|visibility\s*:\s*hidden)`).MatchString(tag) {
+		return true
+	}
+	// Check known tracker URL patterns in src
+	src := reSpyPixel.FindStringSubmatch(tag)
+	if len(src) >= 2 {
+		u := strings.ToLower(src[1])
+		trackerPatterns := []string{
+			"/track/open", "/track/click", "open.php",
+			"/pixel", "/beacon", "/wf/open", "/o.gif",
+			"list-manage.com/track",
+		}
+		for _, p := range trackerPatterns {
+			if strings.Contains(u, p) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// detectSpyPixels scans raw HTML for tracking pixel <img> tags.
+func detectSpyPixels(html string) SpyPixelInfo {
+	var spy SpyPixelInfo
+	// Find all <img> tags
+	reImg := regexp.MustCompile(`(?i)<img\b[^>]*>`)
+	tags := reImg.FindAllString(html, -1)
+	seen := make(map[string]bool)
+	for _, tag := range tags {
+		if isSpyPixel(tag) {
+			spy.Count++
+			src := reSpyPixel.FindStringSubmatch(tag)
+			if len(src) >= 2 {
+				if d := extractDomain(src[1]); d != "" && !seen[d] {
+					seen[d] = true
+					spy.Domains = append(spy.Domains, d)
+				}
+			}
+		}
+	}
+	return spy
 }
 
 // reEmptyImg matches empty markdown image tags produced from tracking pixels.
 var reEmptyImg = regexp.MustCompile(`!\[\s*\]\(([^)]*)\)`)
 
 // cleanMarkdown post-processes html-to-markdown output to remove newsletter
-// noise: invisible Unicode spacers, tracking pixels, bare URL lines, and
-// excessive blank lines. Returns the cleaned string and spy pixel info.
-func cleanMarkdown(s string) (string, SpyPixelInfo) {
+// noise: invisible Unicode spacers, empty images, bare URL lines, and
+// excessive blank lines.
+func cleanMarkdown(s string) string {
 	// 1. Strip invisible Unicode characters used as email preheader spacers:
 	//    U+034F COMBINING GRAPHEME JOINER, U+00AD SOFT HYPHEN,
 	//    U+200B ZERO WIDTH SPACE, U+200C/D ZWNJ/ZWJ, U+FEFF BOM
 	reInvis := regexp.MustCompile(`[\x{034F}\x{00AD}\x{200B}\x{200C}\x{200D}\x{FEFF}]+`)
 	s = reInvis.ReplaceAllString(s, "")
 
-	// 2. Detect and remove empty image tags (tracking pixels): ![](...) or ![  ](...)
-	var spy SpyPixelInfo
-	matches := reEmptyImg.FindAllStringSubmatch(s, -1)
-	spy.Count = len(matches)
-	if spy.Count > 0 {
-		seen := make(map[string]bool)
-		for _, m := range matches {
-			if d := extractDomain(m[1]); d != "" && !seen[d] {
-				seen[d] = true
-				spy.Domains = append(spy.Domains, d)
-			}
-		}
-		s = reEmptyImg.ReplaceAllString(s, "")
-	}
+	// 2. Remove empty image tags: ![](...) or ![  ](...)
+	s = reEmptyImg.ReplaceAllString(s, "")
 
 	// 3. Remove empty link anchors left behind when image-only links are cleaned:
 	//    [](url) or [  ](url)
@@ -1278,7 +1333,7 @@ func cleanMarkdown(s string) (string, SpyPixelInfo) {
 	reExcessBlank := regexp.MustCompile(`\n{4,}`)
 	s = reExcessBlank.ReplaceAllString(s, "\n\n\n")
 
-	return strings.TrimSpace(s), spy
+	return strings.TrimSpace(s)
 }
 
 // extractDomain pulls the hostname from a URL string, returning "" on failure.

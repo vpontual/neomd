@@ -409,31 +409,39 @@ func TestParseBody_ReferencesExtraction(t *testing.T) {
 
 func TestSpyPixelDetection(t *testing.T) {
 	// HTML email with 2 tracking pixels from different domains.
+	// First: detected by size heuristic (width="1" height="1")
+	// Second: detected by URL pattern (/track/open)
+	// Third: legitimate image with alt text — should NOT be counted
+	// Fourth: decorative image with empty alt but normal size — should NOT be counted
 	raw := "MIME-Version: 1.0\r\n" +
 		"Content-Type: text/html; charset=utf-8\r\n" +
 		"\r\n" +
 		`<html><body>` +
 		`<p>Hello world</p>` +
-		`<img src="https://open.mailchimp.com/track/abc123" alt="" width="1" height="1">` +
-		`<img src="https://pixel.sendinblue.com/log/open?id=xyz" alt="">` +
+		`<img src="https://click.mailchimp.com/track/open.php?id=abc" alt="" width="1" height="1">` +
+		`<img src="https://pixel.sendinblue.com/beacon/track/open?id=xyz" alt="" height="0">` +
 		`<img src="cid:logo" alt="Company Logo">` +
+		`<img src="https://cdn.example.com/button.png" alt="" width="200" height="50">` +
 		`</body></html>`
 
 	_, _, _, _, _, spy := parseBody([]byte(raw))
 
-	if spy.Count < 2 {
-		t.Errorf("SpyPixelInfo.Count = %d, want >= 2", spy.Count)
+	if spy.Count != 2 {
+		t.Errorf("SpyPixelInfo.Count = %d, want 2", spy.Count)
 	}
 	// Check that domains were extracted
 	found := make(map[string]bool)
 	for _, d := range spy.Domains {
 		found[d] = true
 	}
-	if !found["open.mailchimp.com"] {
-		t.Errorf("expected domain open.mailchimp.com in spy.Domains, got %v", spy.Domains)
+	if !found["click.mailchimp.com"] {
+		t.Errorf("expected domain click.mailchimp.com in spy.Domains, got %v", spy.Domains)
 	}
 	if !found["pixel.sendinblue.com"] {
 		t.Errorf("expected domain pixel.sendinblue.com in spy.Domains, got %v", spy.Domains)
+	}
+	if found["cdn.example.com"] {
+		t.Errorf("decorative image cdn.example.com should NOT be counted as spy pixel, got %v", spy.Domains)
 	}
 }
 

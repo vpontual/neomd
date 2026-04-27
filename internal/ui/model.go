@@ -500,9 +500,10 @@ type Model struct {
 	// Marked emails for batch operations (UID → true)
 	markedUIDs map[uint32]bool
 
-	// Spy pixel tracking: UID → true when email body contained tracking pixels.
+	// Spy pixel tracking: "folder\x00uid" → true when email body contained tracking pixels.
 	// Populated on body load, used to show ⊙ indicator in inbox list.
-	spyPixelUIDs map[uint32]bool
+	// Keyed by folder+UID to avoid collisions across mailboxes (UIDs are only unique per folder).
+	spyPixelKeys map[string]bool
 
 	// Undo stack: each entry is a batch of moves that can be reversed with u.
 	// Screener operations (I/O/F/P/$) are not undoable — they also modify .txt files.
@@ -602,7 +603,7 @@ func New(cfg *config.Config, clients []*imap.Client, sc *screener.Screener, mail
 		compose:       compose,
 		spinner:       sp,
 		markedUIDs:    make(map[uint32]bool),
-		spyPixelUIDs:  make(map[uint32]bool),
+		spyPixelKeys:  make(map[string]bool),
 		startupNotice: detectStartupNotice(),
 		sortField:     "date",
 		sortReverse:   true, // newest first
@@ -1734,7 +1735,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.openSpyPixels = msg.spyPixels
 		// Track spy pixel presence for inbox indicator
 		if msg.spyPixels.Count > 0 && msg.email != nil {
-			m.spyPixelUIDs[msg.email.UID] = true
+			m.spyPixelKeys[spyPixelKey(msg.email.Folder, msg.email.UID)] = true
 		}
 		// Store References header in the email struct for threading
 		if msg.email != nil {
@@ -2850,7 +2851,7 @@ func (m *Model) applyFilter() tea.Cmd {
 	}
 
 	noThread := len(m.folders) > 0 && m.activeFolder() == m.cfg.Folders.Sent
-	return setEmails(&m.inbox, filtered, m.markedUIDs, m.spyPixelUIDs, m.shouldPrefixFolderInSubject(), m.sortField, m.sortReverse, noThread)
+	return setEmails(&m.inbox, filtered, m.markedUIDs, m.spyPixelKeys, m.shouldPrefixFolderInSubject(), m.sortField, m.sortReverse, noThread)
 }
 
 // handleChord dispatches two-key sequences (g<x>, M<x>, space<x>).
@@ -3174,7 +3175,7 @@ func (m Model) openInBrowser() (tea.Model, tea.Cmd) {
 
 	var htmlBody string
 	if m.openHTMLBody != "" {
-		htmlBody = m.openHTMLBody
+		htmlBody = render.InjectCSP(m.openHTMLBody)
 	} else {
 		var err error
 		htmlBody, err = render.ToHTML(m.openBody)
@@ -3251,7 +3252,7 @@ func (m Model) openInW3m() (tea.Model, tea.Cmd) {
 
 	var htmlBody string
 	if m.openHTMLBody != "" {
-		htmlBody = m.openHTMLBody
+		htmlBody = render.InjectCSP(m.openHTMLBody)
 	} else {
 		var err error
 		htmlBody, err = render.ToHTML(m.openBody)
