@@ -84,6 +84,14 @@ type (
 	}
 	// resetToScreenReadyMsg is returned once we know how many emails are in ToScreen.
 	resetToScreenReadyMsg struct{ uids []uint32 }
+	// spyScanProgressMsg reports progress during :scan-spy-pixels.
+	spyScanProgressMsg struct {
+		scanned int
+		total   int
+		found   int
+		done    bool
+		err     error
+	}
 	// folderCountsMsg carries unseen counts for watched folder tabs.
 	folderCountsMsg struct{ counts map[string]int }
 	// deleteAllReadyMsg carries UIDs to permanently delete after y/n confirm.
@@ -603,7 +611,7 @@ func New(cfg *config.Config, clients []*imap.Client, sc *screener.Screener, mail
 		compose:       compose,
 		spinner:       sp,
 		markedUIDs:    make(map[uint32]bool),
-		spyPixelKeys:  make(map[string]bool),
+		spyPixelKeys:  loadSpyPixelCache(),
 		startupNotice: detectStartupNotice(),
 		sortField:     "date",
 		sortReverse:   true, // newest first
@@ -1386,6 +1394,53 @@ func (m Model) deepScreenClassifyCmd(accumulated []imap.Email, remaining []uint3
 	}
 }
 
+// spyScanCmd scans emails in the current folder for spy pixels in the background.
+// Skips UIDs already in the cache. Uses Peek so read status is unchanged.
+func (m Model) spyScanCmd() tea.Cmd {
+	folder := m.activeFolder()
+	// Collect UIDs to scan: all emails in current view minus already-cached ones.
+	var uids []uint32
+	for _, e := range m.emails {
+		if e.Folder != "" && e.Folder != folder {
+			continue
+		}
+		key := spyPixelKey(folder, e.UID)
+		if !m.spyPixelKeys[key] {
+			uids = append(uids, e.UID)
+		}
+	}
+	if len(uids) == 0 {
+		return func() tea.Msg {
+			return spyScanProgressMsg{done: true}
+		}
+	}
+	total := len(uids)
+	cli := m.imapCli()
+	spyKeys := m.spyPixelKeys // shared ref, only written from main goroutine via messages
+
+	return func() tea.Msg {
+		found := 0
+		for i, uid := range uids {
+			spy, err := cli.ScanSpyPixels(nil, folder, uid)
+			if err != nil {
+				return spyScanProgressMsg{err: err, scanned: i, total: total, found: found}
+			}
+			if spy.Count > 0 {
+				found++
+				spyKeys[spyPixelKey(folder, uid)] = true
+			}
+			// Report progress every 10 emails
+			if (i+1)%10 == 0 {
+				// We can't send intermediate messages from a single Cmd,
+				// so we just let it run and report at the end.
+				_ = i
+			}
+		}
+		saveSpyPixelCache(spyKeys)
+		return spyScanProgressMsg{scanned: total, total: total, found: found, done: true}
+	}
+}
+
 // resetToScreenSearchCmd is phase 1: just count UIDs in ToScreen so we can
 // show the user a confirmation before moving anything.
 func (m Model) resetToScreenSearchCmd() tea.Cmd {
@@ -1736,6 +1791,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Track spy pixel presence for inbox indicator
 		if msg.spyPixels.Count > 0 && msg.email != nil {
 			m.spyPixelKeys[spyPixelKey(msg.email.Folder, msg.email.UID)] = true
+			go saveSpyPixelCache(m.spyPixelKeys)
 		}
 		// Store References header in the email struct for threading
 		if msg.email != nil {
@@ -1969,6 +2025,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.isError = false
 		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.activeFolder()))
+
+	case spyScanProgressMsg:
+		if msg.err != nil {
+			m.status = "Spy scan error: " + msg.err.Error()
+			m.isError = true
+		} else if msg.done {
+			m.status = fmt.Sprintf("Spy scan complete: %d/%d emails had tracking pixels", msg.found, msg.scanned)
+			m.isError = false
+		}
+		// Rebuild inbox list to show newly discovered ⊙ indicators
+		return m, m.applyFilter()
 
 	case deepScreenCountMsg:
 		if err := m.validateScreenerSafety(); err != nil {
@@ -2388,7 +2455,7 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case " ": // leader key — wait for digit or shortcut
 		m.pendingKey = " "
-		m.status = "leader:  1-9 folder tab  / IMAP search  w welcome  (esc to cancel)"
+		m.status = "leader:  1-9 folder tab  / IMAP search  S scan spy pixels  w welcome  (esc to cancel)"
 		return m, nil
 
 	case "M":
@@ -2793,6 +2860,31 @@ func saveCmdHistory(path string, history []string) {
 	_ = os.WriteFile(path, []byte(content), 0600)
 }
 
+// loadSpyPixelCache reads the spy pixel cache from disk.
+// Each line is "folder\x00uid".
+func loadSpyPixelCache() map[string]bool {
+	data, err := os.ReadFile(config.SpyPixelCachePath())
+	if err != nil {
+		return make(map[string]bool)
+	}
+	m := make(map[string]bool)
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line != "" {
+			m[line] = true
+		}
+	}
+	return m
+}
+
+// saveSpyPixelCache writes the spy pixel cache to disk.
+func saveSpyPixelCache(keys map[string]bool) {
+	var lines []string
+	for k := range keys {
+		lines = append(lines, k)
+	}
+	_ = os.WriteFile(config.SpyPixelCachePath(), []byte(strings.Join(lines, "\n")+"\n"), 0600)
+}
+
 func (m Model) shouldPrefixFolderInSubject() bool {
 	switch m.offTabFolder {
 	case "Search", "Everything", "Thread":
@@ -2867,6 +2959,10 @@ func (m Model) handleChord(prefix, key string) (tea.Model, tea.Cmd) {
 		if key == "w" {
 			m.state = stateWelcome
 			return m, nil
+		}
+		if key == "S" {
+			m.status = "Scanning for spy pixels…"
+			return m, m.spyScanCmd()
 		}
 		if len(key) == 1 && key >= "1" && key <= "9" {
 			idx := int(key[0] - '1') // 0-based

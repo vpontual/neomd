@@ -759,6 +759,62 @@ func (c *Client) FetchBody(ctx context.Context, folder string, uid uint32) (stri
 	return markdown, rawHTML, webURL, attachments, references, spyPixels, err
 }
 
+// ScanSpyPixels fetches the body (with Peek) and returns only spy pixel info.
+// Lighter than FetchBody — skips markdown conversion and attachment extraction.
+func (c *Client) ScanSpyPixels(ctx context.Context, folder string, uid uint32) (SpyPixelInfo, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var spy SpyPixelInfo
+	err := c.withConn(ctx, func(conn *imapclient.Client) error {
+		if err := c.selectMailbox(folder); err != nil {
+			return err
+		}
+		var fetchSet imap.UIDSet
+		fetchSet.AddNum(imap.UID(uid))
+		msgs, err := conn.Fetch(fetchSet, &imap.FetchOptions{
+			UID:         true,
+			BodySection: []*imap.FetchItemBodySection{{Peek: true}},
+		}).Collect()
+		if err != nil {
+			return fmt.Errorf("FETCH spy-scan uid=%d: %w", uid, err)
+		}
+		if len(msgs) == 0 || len(msgs[0].BodySection) == 0 {
+			return nil
+		}
+		// Extract only the HTML part for spy pixel detection.
+		htmlText := extractHTMLPart(msgs[0].BodySection[0].Bytes)
+		if htmlText != "" {
+			spy = detectSpyPixels(htmlText)
+		}
+		return nil
+	})
+	return spy, err
+}
+
+// extractHTMLPart pulls just the text/html content from raw MIME bytes.
+func extractHTMLPart(raw []byte) string {
+	e, err := message.Read(bytes.NewReader(raw))
+	if err != nil && !message.IsUnknownCharset(err) {
+		return ""
+	}
+	mr := mail.NewReader(e)
+	for {
+		p, err := mr.NextPart()
+		if err != nil {
+			break
+		}
+		if h, ok := p.Header.(*mail.InlineHeader); ok {
+			ct, _, _ := h.ContentType()
+			if ct == "text/html" {
+				data, _ := io.ReadAll(p.Body)
+				return string(data)
+			}
+		}
+	}
+	return ""
+}
+
 // FetchRaw fetches the full raw MIME source (EML) for a single message.
 func (c *Client) FetchRaw(ctx context.Context, folder string, uid uint32) ([]byte, error) {
 	if ctx == nil {

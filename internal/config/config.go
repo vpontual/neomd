@@ -271,6 +271,16 @@ func DraftsBackupDir() string {
 	return p
 }
 
+// SpyPixelCachePath returns the path for the spy pixel cache file.
+func SpyPixelCachePath() string {
+	if dir, err := os.UserCacheDir(); err == nil {
+		p := filepath.Join(dir, cacheDirName)
+		_ = os.MkdirAll(p, 0700)
+		return filepath.Join(p, "spy_pixels")
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("neomd_%d_spy_pixels", os.Getuid()))
+}
+
 // welcomePath returns the path of the first-run marker file.
 func welcomePath() string {
 	if dir, err := os.UserCacheDir(); err == nil {

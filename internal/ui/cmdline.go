@@ -62,6 +62,15 @@ func init() {
 			},
 		},
 		{
+			name:    "scan-spy-pixels",
+			aliases: []string{"ssp"},
+			desc:    "scan current folder for tracking pixels (background, skips already scanned)",
+			run: func(m *Model) (tea.Model, tea.Cmd) {
+				m.status = "Scanning for spy pixels…"
+				return m, m.spyScanCmd()
+			},
+		},
+		{
 			name:    "reload",
 			aliases: []string{"r", "re"},
 			desc:    "reload / refresh the current folder",
