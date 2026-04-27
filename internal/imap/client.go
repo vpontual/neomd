@@ -1250,7 +1250,8 @@ func isSpyPixel(tag string) bool {
 		return false
 	}
 	// Check size heuristics: width="1", height="1", width="0", height="0"
-	if regexp.MustCompile(`(?i)\b(?:width|height)=["']?[01](?:px)?["']?`).MatchString(tag) {
+	// The trailing ["\s>] ensures we don't match width="100" etc.
+	if regexp.MustCompile(`(?i)\b(?:width|height)=["']?[01](?:px)?["'\s>]`).MatchString(tag) {
 		return true
 	}
 	// Check CSS hiding: display:none, visibility:hidden
