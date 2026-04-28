@@ -75,6 +75,15 @@ func (e testEnv) imapClient() *goIMAP.Client {
 	})
 }
 
+// ccRecipient returns ", addr" if NEOMD_TEST_CC is set, empty string otherwise.
+// Used to optionally CC test emails to a live inbox for manual inspection.
+func (e testEnv) ccRecipient() string {
+	if cc := os.Getenv("NEOMD_TEST_CC"); cc != "" {
+		return ", " + cc
+	}
+	return ""
+}
+
 func (e testEnv) smtpConfig() smtp.Config {
 	return smtp.Config{
 		Host:     e.smtpHost,
@@ -968,7 +977,7 @@ This email tests neomd's security features.
 
 *sent from [neomd](https://neomd.ssp.sh)*`
 
-	err := smtp.Send(env.smtpConfig(), env.user+", simon@ssp.sh", "", "", subject, body, []string{realDoc, fakeImg})
+	err := smtp.Send(env.smtpConfig(), env.user+env.ccRecipient(), "", "", subject, body, []string{realDoc, fakeImg})
 	if err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -1041,7 +1050,7 @@ If everything works: you see the image, no popups, no iframe content.
 
 	// Send normally — the HTML will contain the markdown-rendered content.
 	// To also test raw HTML injection, we build a custom message with injected tags.
-	raw, err := smtp.BuildMessage(env.from, env.user+", simon@ssp.sh", "", subject, body, nil, "")
+	raw, err := smtp.BuildMessage(env.from, env.user+env.ccRecipient(), "", subject, body, nil, "")
 	if err != nil {
 		t.Fatalf("BuildMessage: %v", err)
 	}
@@ -1059,7 +1068,10 @@ If everything works: you see the image, no popups, no iframe content.
 		rawStr = rawStr[:idx] + injection + rawStr[idx:]
 	}
 
-	allRecipients := []string{env.user, "simon@ssp.sh"}
+	allRecipients := []string{env.user}
+	if cc := env.ccRecipient(); cc != "" {
+		allRecipients = append(allRecipients, strings.TrimPrefix(cc, ", "))
+	}
 	if err := smtp.SendRaw(env.smtpConfig(), allRecipients, []byte(rawStr)); err != nil {
 		t.Fatalf("SendRaw: %v", err)
 	}
