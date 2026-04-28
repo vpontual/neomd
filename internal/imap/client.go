@@ -19,6 +19,7 @@ import (
 	imap "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/emersion/go-message"
+	_ "github.com/emersion/go-message/charset" // register charset decoders for ISO-8859-1, Windows-1252, etc.
 	"github.com/emersion/go-message/mail"
 	"github.com/sspaeti/neomd/internal/mailtls"
 	"github.com/sspaeti/neomd/internal/oauth2"

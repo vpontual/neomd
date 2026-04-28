@@ -2,6 +2,7 @@ package imap
 
 import (
 	"context"
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
@@ -541,6 +542,91 @@ func TestParseBody_MultipartUnknownCharset(t *testing.T) {
 
 	if body == "" {
 		t.Error("parseBody returned empty body for multipart with unknown charset")
+	}
+}
+
+func TestParseBody_ISO88591_Base64(t *testing.T) {
+	// Real-world case: Swiss bank email with charset=iso-8859-1 and base64 encoding.
+	// German umlauts (ü, ä, ö) must decode correctly to UTF-8.
+	// In ISO-8859-1: ü=0xFC, ä=0xE4, ö=0xF6, Ü=0xDC
+	iso88591Bytes := []byte("H\xe4b \xe4 sch\xf6ne Abe\r\n\xdcber CHF 7'260")
+	encoded := base64.StdEncoding.EncodeToString(iso88591Bytes)
+
+	raw := "MIME-Version: 1.0\r\n" +
+		"Content-Type: text/plain; charset=iso-8859-1\r\n" +
+		"Content-Transfer-Encoding: base64\r\n" +
+		"\r\n" +
+		encoded + "\r\n"
+
+	body, _, _, _, _, _ := parseBody([]byte(raw))
+
+	for _, want := range []string{"Häb", "schöne", "Über"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("ISO-8859-1 body missing %q, got: %q", want, body)
+		}
+	}
+}
+
+func TestParseBody_Windows1252(t *testing.T) {
+	// Windows-1252 is common in Outlook-generated emails.
+	// It extends ISO-8859-1 with characters like curly quotes and em-dash.
+	// €=0x80, –=0x96, "=0x93, "=0x94
+	win1252Bytes := []byte("Price: \x804'500 \x93special offer\x94 \x96 limited")
+	encoded := base64.StdEncoding.EncodeToString(win1252Bytes)
+
+	raw := "MIME-Version: 1.0\r\n" +
+		"Content-Type: text/plain; charset=windows-1252\r\n" +
+		"Content-Transfer-Encoding: base64\r\n" +
+		"\r\n" +
+		encoded + "\r\n"
+
+	body, _, _, _, _, _ := parseBody([]byte(raw))
+
+	if !strings.Contains(body, "€") {
+		t.Errorf("Windows-1252 body missing euro sign €, got: %q", body)
+	}
+	if !strings.Contains(body, "\u201c") || !strings.Contains(body, "\u201d") {
+		t.Logf("Windows-1252 curly quotes may not be preserved, body: %q", body)
+	}
+}
+
+func TestParseBody_ISO885915(t *testing.T) {
+	// ISO-8859-15 is used in French/Finnish email. It adds € (0xA4) and
+	// other characters missing from ISO-8859-1.
+	iso885915Bytes := []byte("Cr\xe8me br\xfbl\xe9e co\xfbte \xa4100")
+	encoded := base64.StdEncoding.EncodeToString(iso885915Bytes)
+
+	raw := "MIME-Version: 1.0\r\n" +
+		"Content-Type: text/plain; charset=iso-8859-15\r\n" +
+		"Content-Transfer-Encoding: base64\r\n" +
+		"\r\n" +
+		encoded + "\r\n"
+
+	body, _, _, _, _, _ := parseBody([]byte(raw))
+
+	for _, want := range []string{"Crème", "brûlée", "coûte"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("ISO-8859-15 body missing %q, got: %q", want, body)
+		}
+	}
+}
+
+func TestParseBody_QuotedPrintable_ISO88591(t *testing.T) {
+	// Same charset but with quoted-printable encoding instead of base64.
+	// Common in inline replies and older mail clients.
+	raw := "MIME-Version: 1.0\r\n" +
+		"Content-Type: text/plain; charset=iso-8859-1\r\n" +
+		"Content-Transfer-Encoding: quoted-printable\r\n" +
+		"\r\n" +
+		"Gr=FC=DFe aus Z=FCrich\r\n"
+
+	body, _, _, _, _, _ := parseBody([]byte(raw))
+
+	if !strings.Contains(body, "Grüße") {
+		t.Errorf("QP ISO-8859-1 body missing 'Grüße', got: %q", body)
+	}
+	if !strings.Contains(body, "Zürich") {
+		t.Errorf("QP ISO-8859-1 body missing 'Zürich', got: %q", body)
 	}
 }
 
