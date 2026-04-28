@@ -983,7 +983,7 @@ This email tests neomd's security features.
 	}
 
 	email := waitForEmail(t, cli, "INBOX", subject, 60*time.Second)
-	defer cleanupEmail(t, cli, "INBOX", email.UID)
+	// Intentionally NOT cleaned up — kept in demo inbox for manual testing.
 
 	// Fetch and verify
 	markdown, rawHTML, _, attachments, _, spyPixels, err := cli.FetchBody(context.Background(), "INBOX", email.UID)
@@ -1077,7 +1077,7 @@ If everything works: you see the image, no popups, no iframe content.
 	}
 
 	email := waitForEmail(t, cli, "INBOX", subject, 60*time.Second)
-	defer cleanupEmail(t, cli, "INBOX", email.UID)
+	// Intentionally NOT cleaned up — kept in demo inbox for manual testing.
 
 	_, rawHTML, _, _, _, _, err := cli.FetchBody(context.Background(), "INBOX", email.UID)
 	if err != nil {
