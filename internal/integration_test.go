@@ -11,6 +11,7 @@ package integration_test
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -926,6 +927,162 @@ func TestIntegration_EmailStandardsCompliance(t *testing.T) {
 }
 
 // --- Helpers ---
+
+// TestIntegration_SecurityFeatures sends an email with a real attachment, a
+// disguised script (.sh content saved as .png), a callout, and an HTML signature.
+// The email arrives in the test inbox so you can verify attachment safety live in neomd.
+func TestIntegration_SecurityFeatures(t *testing.T) {
+	env := loadEnv(t)
+	cli := env.imapClient()
+	defer cli.Close()
+
+	subject := uniqueSubject("security-attach-callout")
+
+	// Create temp dir for attachments
+	dir := t.TempDir()
+
+	// 1. Real text attachment
+	realDoc := filepath.Join(dir, "meeting-notes.txt")
+	if err := os.WriteFile(realDoc, []byte("Meeting notes from 2026-04-28.\n\n- Discussed spy pixel blocking\n- Reviewed attachment safety"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. Disguised script: bash content saved as .png
+	fakeImg := filepath.Join(dir, "totally-legit-photo.png")
+	if err := os.WriteFile(fakeImg, []byte("#!/bin/bash\necho 'this is not a real image'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Body with callout
+	body := `# Security Features Test
+
+This email tests neomd's security features.
+
+> [!warning] Attachment Safety Test
+> This email contains a disguised script (bash content saved as .png) alongside
+> a real text document. neomd should block the fake image from auto-opening.
+
+## Attachments included:
+1. **meeting-notes.txt** — real text file (safe)
+2. **totally-legit-photo.png** — actually a bash script (should be blocked by magic-byte check)
+
+*sent from [neomd](https://neomd.ssp.sh)*`
+
+	err := smtp.Send(env.smtpConfig(), env.user+", simon@ssp.sh", "", "", subject, body, []string{realDoc, fakeImg})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	email := waitForEmail(t, cli, "INBOX", subject, 60*time.Second)
+	defer cleanupEmail(t, cli, "INBOX", email.UID)
+
+	// Fetch and verify
+	markdown, rawHTML, _, attachments, _, spyPixels, err := cli.FetchBody(context.Background(), "INBOX", email.UID)
+	if err != nil {
+		t.Fatalf("FetchBody: %v", err)
+	}
+
+	// Verify callout rendered in HTML
+	if !strings.Contains(rawHTML, "callout") || !strings.Contains(rawHTML, "warning") {
+		t.Logf("HTML (truncated): %s", truncate(rawHTML, 300))
+		t.Error("expected callout markup in HTML body")
+	}
+
+	// Verify at least 2 attachments arrived
+	if len(attachments) < 2 {
+		t.Errorf("expected at least 2 attachments, got %d", len(attachments))
+	}
+	for _, a := range attachments {
+		t.Logf("Attachment: %s (%s, %d bytes)", a.Filename, a.ContentType, len(a.Data))
+	}
+
+	// Verify the disguised script would be caught by magic-byte check
+	for _, a := range attachments {
+		if strings.Contains(a.Filename, "totally-legit") {
+			detected := http.DetectContentType(a.Data)
+			if strings.HasPrefix(detected, "image/") {
+				t.Errorf("disguised script detected as image — magic bytes failed: %s", detected)
+			} else {
+				t.Logf("Correctly detected disguised script as: %s (not image/)", detected)
+			}
+		}
+	}
+
+	t.Logf("Spy pixels: %d (expected 0 for self-sent)", spyPixels.Count)
+	t.Logf("Markdown preview: %s", truncate(markdown, 200))
+}
+
+// TestIntegration_BrowserSanitization sends an email with inline script tags,
+// an iframe, and an event handler to verify that SanitizeForBrowser blocks them
+// when opened with O in neomd. Also sent to simon@ssp.sh for live inspection.
+func TestIntegration_BrowserSanitization(t *testing.T) {
+	env := loadEnv(t)
+	cli := env.imapClient()
+	defer cli.Close()
+
+	subject := uniqueSubject("browser-csp-test")
+
+	body := `# Browser Sanitization Test
+
+Open this email with **O** in neomd to test CSP protection.
+
+## What to check in the browser:
+
+1. The **script alert should NOT fire** — if you see a popup saying "XSS worked", the CSP failed
+2. The **iframe should NOT load** — you should see an empty space, not an embedded page
+3. The **image should load normally** — the neomd logo below should be visible
+4. The **onload handler should NOT fire** — no "event handler" alert
+
+If everything works: you see the image, no popups, no iframe content.
+
+![neomd logo](https://raw.githubusercontent.com/ssp-data/neomd/main/docs/static/images/overview-email-feed.png)
+
+*sent from [neomd](https://neomd.ssp.sh) — CSP test*`
+
+	// Send normally — the HTML will contain the markdown-rendered content.
+	// To also test raw HTML injection, we build a custom message with injected tags.
+	raw, err := smtp.BuildMessage(env.from, env.user+", simon@ssp.sh", "", subject, body, nil, "")
+	if err != nil {
+		t.Fatalf("BuildMessage: %v", err)
+	}
+
+	// Inject malicious HTML into the raw MIME before sending.
+	// These should all be blocked by the CSP when opened with O.
+	injection := `<script>alert('XSS worked! CSP is broken!')</script>` +
+		`<iframe src="https://example.com" width="400" height="200"></iframe>` +
+		`<img src="https://raw.githubusercontent.com/ssp-data/neomd/main/docs/static/images/overview-email-feed.png" onload="alert('event handler fired! CSP broken!')" alt="test image">` +
+		`<p style="color:green;font-size:20px;font-weight:bold;">If you see this text but NO popups and NO iframe, the CSP is working correctly.</p>`
+
+	// Insert injection before </body> in the HTML part
+	rawStr := string(raw)
+	if idx := strings.LastIndex(rawStr, "</body>"); idx >= 0 {
+		rawStr = rawStr[:idx] + injection + rawStr[idx:]
+	}
+
+	allRecipients := []string{env.user, "simon@ssp.sh"}
+	if err := smtp.SendRaw(env.smtpConfig(), allRecipients, []byte(rawStr)); err != nil {
+		t.Fatalf("SendRaw: %v", err)
+	}
+
+	email := waitForEmail(t, cli, "INBOX", subject, 60*time.Second)
+	defer cleanupEmail(t, cli, "INBOX", email.UID)
+
+	_, rawHTML, _, _, _, _, err := cli.FetchBody(context.Background(), "INBOX", email.UID)
+	if err != nil {
+		t.Fatalf("FetchBody: %v", err)
+	}
+
+	// Verify the malicious content is present in raw HTML (it should be — CSP blocks execution, not content)
+	if !strings.Contains(rawHTML, "<script>") {
+		t.Error("expected <script> tag in raw HTML (CSP should block execution, not strip content)")
+	}
+	if !strings.Contains(rawHTML, "<iframe") {
+		t.Error("expected <iframe> tag in raw HTML (CSP should block loading, not strip content)")
+	}
+
+	t.Log("Email sent with script/iframe/onload injection.")
+	t.Log("Open with O in neomd — you should see the image and green text, but NO popups and NO iframe content.")
+}
 
 func extractUser(from string) string {
 	if i := strings.Index(from, "<"); i >= 0 {

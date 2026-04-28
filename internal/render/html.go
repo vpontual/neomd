@@ -68,6 +68,10 @@ const browserCSP = `<meta http-equiv="Content-Security-Policy" content="script-s
 // SanitizeForBrowser injects a restrictive CSP into raw HTML to block scripts
 // and frames while allowing images. For use when opening untrusted email HTML.
 func SanitizeForBrowser(html string) string {
+	// Skip if CSP already present (e.g. from htmlTemplate via ToHTML).
+	if strings.Contains(html, "Content-Security-Policy") {
+		return html
+	}
 	// Insert after <head> if present, otherwise prepend.
 	lower := strings.ToLower(html)
 	if idx := strings.Index(lower, "<head>"); idx >= 0 {

@@ -142,7 +142,8 @@ type (
 	attachOpenDoneMsg struct {
 		path      string
 		err       error
-		dangerous bool // true if file was saved but NOT auto-opened due to risky extension
+		dangerous bool   // true if file was saved but NOT auto-opened
+		reason    string // why it was flagged (shown in status bar)
 	}
 	emlDownloadedMsg struct {
 		path string
@@ -1908,7 +1909,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "Attachment error: " + msg.err.Error()
 			m.isError = true
 		} else if msg.dangerous {
-			m.status = "Saved to " + msg.path + " — not auto-opened (dangerous file type)"
+			m.status = "Saved to " + msg.path + " — not auto-opened (" + msg.reason + ")"
 			m.isError = true
 		} else {
 			m.status = "Saved to " + msg.path + " — opening…"
@@ -3525,12 +3526,17 @@ func (m Model) downloadOpenAttachmentCmd(a imap.Attachment) tea.Cmd {
 		}
 		ext := strings.ToLower(filepath.Ext(base))
 		if dangerousExts[ext] {
-			return attachOpenDoneMsg{path: dst, dangerous: true}
+			return attachOpenDoneMsg{path: dst, dangerous: true, reason: fmt.Sprintf("executable extension %s", ext)}
 		}
 		// Magic-byte check: detect actual content type from file bytes.
 		// Flags mismatches like a .sh disguised as .png (detected as text/plain, not image/png).
 		if detected := http.DetectContentType(a.Data); isMimeMismatch(ext, detected) {
-			return attachOpenDoneMsg{path: dst, dangerous: true}
+			// Extract just the MIME type without params for the message
+			mimeType := detected
+			if i := strings.IndexByte(mimeType, ';'); i >= 0 {
+				mimeType = strings.TrimSpace(mimeType[:i])
+			}
+			return attachOpenDoneMsg{path: dst, dangerous: true, reason: fmt.Sprintf("content is %s, not %s", mimeType, ext)}
 		}
 		_ = exec.Command("xdg-open", dst).Start()
 		return attachOpenDoneMsg{path: dst}
