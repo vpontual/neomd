@@ -3,9 +3,11 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -271,6 +273,16 @@ func DraftsBackupDir() string {
 	return p
 }
 
+// CrashLogPath returns the path for the crash log file.
+func CrashLogPath() string {
+	if dir, err := os.UserCacheDir(); err == nil {
+		p := filepath.Join(dir, cacheDirName)
+		_ = os.MkdirAll(p, 0700)
+		return filepath.Join(p, "crash.log")
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("neomd_%d_crash.log", os.Getuid()))
+}
+
 // SpyPixelCachePath returns the path for the spy pixel cache file.
 func SpyPixelCachePath() string {
 	if dir, err := os.UserCacheDir(); err == nil {
@@ -358,7 +370,77 @@ func Load(path string) (*Config, error) {
 
 	cfg.Listmonk.APIToken = expandEnv(cfg.Listmonk.APIToken)
 
+	if err := cfg.validate(); err != nil {
+		return nil, fmt.Errorf("config validation: %w", err)
+	}
+
 	return cfg, nil
+}
+
+// validate checks config values for common mistakes.
+func (cfg *Config) validate() error {
+	if len(cfg.Accounts) == 0 && cfg.Account.IMAP == "" {
+		return fmt.Errorf("no accounts configured — add at least one [[accounts]] section")
+	}
+	for i, a := range cfg.Accounts {
+		label := a.Name
+		if label == "" {
+			label = fmt.Sprintf("accounts[%d]", i)
+		}
+		if a.IMAP == "" {
+			return fmt.Errorf("account %q: imap address is required", label)
+		}
+		if a.SMTP == "" {
+			return fmt.Errorf("account %q: smtp address is required", label)
+		}
+		if err := validateHostPort(a.IMAP, label, "imap"); err != nil {
+			return err
+		}
+		if err := validateHostPort(a.SMTP, label, "smtp"); err != nil {
+			return err
+		}
+		if a.User == "" && !a.IsOAuth2() {
+			return fmt.Errorf("account %q: user is required", label)
+		}
+	}
+	// Validate legacy single-account fields if used
+	if cfg.Account.IMAP != "" {
+		if err := validateHostPort(cfg.Account.IMAP, "account", "imap"); err != nil {
+			return err
+		}
+		if cfg.Account.SMTP != "" {
+			if err := validateHostPort(cfg.Account.SMTP, "account", "smtp"); err != nil {
+				return err
+			}
+		}
+	}
+	// Validate UI settings
+	if cfg.UI.InboxCount < 0 {
+		return fmt.Errorf("ui.inbox_count must be >= 0, got %d", cfg.UI.InboxCount)
+	}
+	if cfg.UI.BgSyncInterval < 0 {
+		return fmt.Errorf("ui.bg_sync_interval must be >= 0, got %d", cfg.UI.BgSyncInterval)
+	}
+	if cfg.UI.MarkAsReadAfterSecs < 0 {
+		return fmt.Errorf("ui.mark_as_read_after_secs must be >= 0, got %d", cfg.UI.MarkAsReadAfterSecs)
+	}
+	return nil
+}
+
+// validateHostPort checks that an address is in host:port format with a valid port.
+func validateHostPort(addr, account, field string) error {
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("account %q: %s %q is not valid host:port — %w", account, field, addr, err)
+	}
+	if host == "" {
+		return fmt.Errorf("account %q: %s host is empty in %q", account, field, addr)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("account %q: %s port %q is not a valid port (1-65535)", account, field, portStr)
+	}
+	return nil
 }
 
 func defaults() *Config {

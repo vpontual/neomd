@@ -245,3 +245,87 @@ invalid toml here !!!
 		t.Errorf("error message contains password %q — potential leak", password)
 	}
 }
+
+func TestValidateHostPort(t *testing.T) {
+	tests := []struct {
+		addr    string
+		wantErr bool
+	}{
+		{"imap.example.com:993", false},
+		{"localhost:143", false},
+		{"127.0.0.1:1143", false},
+		{"mail.example.com:65535", false},
+		// Invalid
+		{"imap.example.com", true},    // no port
+		{":993", true},                // no host
+		{"imap.example.com:0", true},  // port 0
+		{"imap.example.com:99999", true}, // port > 65535
+		{"imap.example.com:abc", true},   // non-numeric port
+		{"", true},                       // empty
+	}
+	for _, tt := range tests {
+		t.Run(tt.addr, func(t *testing.T) {
+			err := validateHostPort(tt.addr, "test", "imap")
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateHostPort(%q) error = %v, wantErr %v", tt.addr, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidate_MissingAccount(t *testing.T) {
+	cfg := &Config{}
+	err := cfg.validate()
+	if err == nil {
+		t.Error("expected error for config with no accounts")
+	}
+}
+
+func TestValidate_InvalidPort(t *testing.T) {
+	cfg := &Config{
+		Accounts: []AccountConfig{{
+			Name: "Test",
+			IMAP: "imap.example.com:99999",
+			SMTP: "smtp.example.com:587",
+			User: "test@example.com",
+		}},
+	}
+	err := cfg.validate()
+	if err == nil {
+		t.Error("expected error for invalid IMAP port")
+	}
+	if !strings.Contains(err.Error(), "port") {
+		t.Errorf("error should mention port, got: %v", err)
+	}
+}
+
+func TestValidate_ValidConfig(t *testing.T) {
+	cfg := &Config{
+		Accounts: []AccountConfig{{
+			Name: "Test",
+			IMAP: "imap.example.com:993",
+			SMTP: "smtp.example.com:587",
+			User: "test@example.com",
+		}},
+	}
+	err := cfg.validate()
+	if err != nil {
+		t.Errorf("valid config should not error, got: %v", err)
+	}
+}
+
+func TestValidate_NegativeUIValues(t *testing.T) {
+	cfg := &Config{
+		Accounts: []AccountConfig{{
+			Name: "Test",
+			IMAP: "imap.example.com:993",
+			SMTP: "smtp.example.com:587",
+			User: "test@example.com",
+		}},
+		UI: UIConfig{InboxCount: -1},
+	}
+	err := cfg.validate()
+	if err == nil {
+		t.Error("expected error for negative inbox_count")
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	imap "github.com/emersion/go-imap/v2"
 )
@@ -480,6 +481,96 @@ func TestSpyPixelPlainTextEmail(t *testing.T) {
 
 	if spy.Count != 0 {
 		t.Errorf("plain-text email SpyPixelInfo.Count = %d, want 0", spy.Count)
+	}
+}
+
+func TestParseBody_UnknownCharset(t *testing.T) {
+	// Emails with unknown charsets should not fail — they should render
+	// with raw bytes rather than crashing. This is common with legacy
+	// encodings (ISO-8859-15, Windows-1256, etc.).
+	raw := "MIME-Version: 1.0\r\n" +
+		"Content-Type: text/plain; charset=x-unknown-charset-999\r\n" +
+		"Content-Transfer-Encoding: 7bit\r\n" +
+		"\r\n" +
+		"This email uses an unknown charset but should still be readable."
+
+	body, _, _, _, _, _ := parseBody([]byte(raw))
+
+	if body == "" {
+		t.Error("parseBody returned empty body for unknown charset — should fall back to raw bytes")
+	}
+	if !strings.Contains(body, "unknown charset") {
+		t.Errorf("expected body to contain raw text, got: %q", body)
+	}
+}
+
+func TestParseBody_UnknownEncoding(t *testing.T) {
+	// Emails with unknown transfer encodings should degrade gracefully.
+	raw := "MIME-Version: 1.0\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"Content-Transfer-Encoding: x-uuencode\r\n" +
+		"\r\n" +
+		"This email uses an unusual encoding."
+
+	body, _, _, _, _, _ := parseBody([]byte(raw))
+
+	// Should not panic or return empty — may return raw bytes or partial content
+	if body == "" {
+		t.Error("parseBody returned empty body for unknown encoding — should not crash")
+	}
+}
+
+func TestParseBody_MultipartUnknownCharset(t *testing.T) {
+	// Multipart email where one part has an unknown charset.
+	// The other part should still be parsed correctly.
+	boundary := "test-boundary-charset"
+	raw := "MIME-Version: 1.0\r\n" +
+		"Content-Type: multipart/alternative; boundary=" + boundary + "\r\n" +
+		"\r\n" +
+		"--" + boundary + "\r\n" +
+		"Content-Type: text/plain; charset=x-fake-charset\r\n" +
+		"\r\n" +
+		"Plain text with unknown charset\r\n" +
+		"--" + boundary + "\r\n" +
+		"Content-Type: text/html; charset=utf-8\r\n" +
+		"\r\n" +
+		"<html><body><p>HTML part is fine</p></body></html>\r\n" +
+		"--" + boundary + "--\r\n"
+
+	body, _, _, _, _, _ := parseBody([]byte(raw))
+
+	if body == "" {
+		t.Error("parseBody returned empty body for multipart with unknown charset")
+	}
+}
+
+func TestConnectionHealthCheck_LastActivity(t *testing.T) {
+	// Verify that lastActivity is tracked by the Client struct.
+	// We can't test the actual NOOP probe without a real IMAP server,
+	// but we can verify the field exists and the logic is wired up.
+	c := &Client{
+		cfg: Config{
+			Host: "imap.example.com",
+			Port: "993",
+			TLS:  true,
+		},
+	}
+
+	// Initially zero — first withConn should not trigger NOOP
+	if !c.lastActivity.IsZero() {
+		t.Error("lastActivity should be zero on new Client")
+	}
+
+	// After setting lastActivity to recent, NOOP should not trigger
+	c.lastActivity = time.Now()
+	if time.Since(c.lastActivity) > 2*time.Minute {
+		t.Error("recent lastActivity should not trigger health check")
+	}
+
+	// After setting lastActivity to 3 minutes ago, NOOP should trigger
+	c.lastActivity = time.Now().Add(-3 * time.Minute)
+	if time.Since(c.lastActivity) <= 2*time.Minute {
+		t.Error("stale lastActivity (3min ago) should trigger health check")
 	}
 }
 

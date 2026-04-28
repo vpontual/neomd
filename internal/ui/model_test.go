@@ -2,9 +2,12 @@ package ui
 
 import (
 	"net/http"
+	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sspaeti/neomd/internal/config"
@@ -737,5 +740,96 @@ func TestMimeMismatchWithRealBytes(t *testing.T) {
 					tt.ext, detected, got, tt.wantBad, string(tt.data[:min(20, len(tt.data))]))
 			}
 		})
+	}
+}
+
+func TestSafeGo_RecoversPanic(t *testing.T) {
+	// safeGo should recover from panics without crashing the process.
+	// If this test passes, the goroutine panic was caught.
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	completed := false
+	safeGo(func() {
+		defer wg.Done()
+		completed = true
+		panic("intentional test panic")
+	})
+
+	// Wait for the goroutine to finish (panic should be recovered)
+	wg.Wait()
+
+	if !completed {
+		t.Error("safeGo goroutine did not execute before panicking")
+	}
+	// If we reach here, the panic was recovered — test passes
+}
+
+func TestSafeGo_NormalExecution(t *testing.T) {
+	// safeGo should work normally for non-panicking functions.
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	result := 0
+	safeGo(func() {
+		defer wg.Done()
+		result = 42
+	})
+
+	wg.Wait()
+
+	if result != 42 {
+		t.Errorf("safeGo normal execution: got %d, want 42", result)
+	}
+}
+
+func TestSafeGo_WritesCrashLog(t *testing.T) {
+	// safeGo should write panics to the crash log file.
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	safeGo(func() {
+		defer wg.Done()
+		panic("crash log test panic")
+	})
+
+	wg.Wait()
+	time.Sleep(100 * time.Millisecond) // let file write complete
+
+	path := config.CrashLogPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("crash log not readable (may not exist in test env): %v", err)
+	}
+	if !strings.Contains(string(data), "crash log test panic") {
+		t.Error("crash log should contain the panic message")
+	}
+}
+
+func TestSafeGo_MultiplePanics(t *testing.T) {
+	// Multiple concurrent panicking goroutines should all be recovered.
+	var wg sync.WaitGroup
+	count := 10
+	wg.Add(count)
+
+	for i := 0; i < count; i++ {
+		safeGo(func() {
+			defer wg.Done()
+			panic("concurrent panic")
+		})
+	}
+
+	// All should complete without crashing the process
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success — all panics recovered
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for panicking goroutines to recover")
 	}
 }

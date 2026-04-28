@@ -72,6 +72,7 @@ type Client struct {
 	mu              sync.Mutex
 	conn            *imapclient.Client
 	selectedMailbox string
+	lastActivity    time.Time // tracks last successful operation for health checks
 }
 
 // New creates a new IMAP client (does not connect yet).
@@ -157,20 +158,61 @@ func (c *Client) reconnect(ctx context.Context) error {
 	return c.connect(ctx)
 }
 
+// withConn runs fn on the IMAP connection, reconnecting if needed.
+// Does NOT retry on network errors — safe for mutating operations (APPEND, MOVE, STORE).
 func (c *Client) withConn(ctx context.Context, fn func(*imapclient.Client) error) error {
+	return c.withConnRetryable(ctx, fn, false)
+}
+
+// withConnRetry runs fn on the IMAP connection with one automatic retry on network error.
+// Only safe for idempotent/read-only operations (FETCH, SEARCH, SELECT, NOOP).
+func (c *Client) withConnRetry(ctx context.Context, fn func(*imapclient.Client) error) error {
+	return c.withConnRetryable(ctx, fn, true)
+}
+
+func (c *Client) withConnRetryable(ctx context.Context, fn func(*imapclient.Client) error, retry bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.connect(ctx); err != nil {
 		return err
+	}
+	// After 2+ minutes of inactivity (e.g. laptop suspend/resume),
+	// probe the connection with NOOP before running the real operation.
+	if !c.lastActivity.IsZero() && time.Since(c.lastActivity) > 2*time.Minute {
+		if err := c.conn.Noop().Wait(); err != nil {
+			_ = c.conn.Close()
+			c.conn = nil
+			c.selectedMailbox = ""
+			if err := c.connect(ctx); err != nil {
+				return err
+			}
+		}
 	}
 	if err := fn(c.conn); err != nil {
 		if isNetErr(err) {
 			_ = c.conn.Close()
 			c.conn = nil
 			c.selectedMailbox = ""
+			if retry {
+				time.Sleep(1 * time.Second)
+				if err := c.connect(ctx); err != nil {
+					return err
+				}
+				if err := fn(c.conn); err != nil {
+					if isNetErr(err) {
+						_ = c.conn.Close()
+						c.conn = nil
+						c.selectedMailbox = ""
+					}
+					return err
+				}
+				c.lastActivity = time.Now()
+				return nil
+			}
 		}
 		return err
 	}
+	c.lastActivity = time.Now()
 	return nil
 }
 
@@ -220,7 +262,7 @@ func (c *Client) Ping(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return c.withConn(ctx, func(conn *imapclient.Client) error {
+	return c.withConnRetry(ctx, func(conn *imapclient.Client) error {
 		return conn.Noop().Wait()
 	})
 }
@@ -231,7 +273,7 @@ func (c *Client) FetchHeaders(ctx context.Context, folder string, n int) ([]Emai
 		ctx = context.Background()
 	}
 	var emails []Email
-	err := c.withConn(ctx, func(conn *imapclient.Client) error {
+	err := c.withConnRetry(ctx, func(conn *imapclient.Client) error {
 		emails = nil // reset on retry to avoid duplicates
 		if err := c.selectMailbox(folder); err != nil {
 			return err
@@ -354,7 +396,7 @@ func (c *Client) SearchUIDs(ctx context.Context, folder string) ([]uint32, error
 		ctx = context.Background()
 	}
 	var uids []uint32
-	err := c.withConn(ctx, func(conn *imapclient.Client) error {
+	err := c.withConnRetry(ctx, func(conn *imapclient.Client) error {
 		uids = nil // reset on retry
 		if err := c.selectMailbox(folder); err != nil {
 			return err
@@ -384,11 +426,15 @@ func (c *Client) FetchUnseenCounts(ctx context.Context, folders map[string]strin
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	counts := make(map[string]int, len(folders))
-	err := c.withConn(ctx, func(conn *imapclient.Client) error {
+	var counts map[string]int
+	err := c.withConnRetry(ctx, func(conn *imapclient.Client) error {
+		counts = make(map[string]int, len(folders)) // reset on retry
 		for label, mailbox := range folders {
 			data, err := conn.Status(mailbox, &imap.StatusOptions{NumUnseen: true}).Wait()
 			if err != nil {
+				if isNetErr(err) {
+					return err // let withConnRetry reconnect
+				}
 				continue // folder may not exist; skip
 			}
 			if data.NumUnseen != nil {
@@ -441,7 +487,7 @@ func (c *Client) SearchMessages(ctx context.Context, folder, query string) ([]Em
 	criteria := buildSearchCriteria(query)
 
 	var uids []uint32
-	err := c.withConn(ctx, func(conn *imapclient.Client) error {
+	err := c.withConnRetry(ctx, func(conn *imapclient.Client) error {
 		uids = nil // reset on retry
 		if err := c.selectMailbox(folder); err != nil {
 			return err
@@ -652,7 +698,7 @@ func (c *Client) FetchHeadersByUID(ctx context.Context, folder string, uids []ui
 		return nil, nil
 	}
 	var emails []Email
-	err := c.withConn(ctx, func(conn *imapclient.Client) error {
+	err := c.withConnRetry(ctx, func(conn *imapclient.Client) error {
 		emails = nil // reset on retry
 		if err := c.selectMailbox(folder); err != nil {
 			return err
@@ -732,7 +778,7 @@ func (c *Client) FetchBody(ctx context.Context, folder string, uid uint32) (stri
 	var markdown, rawHTML, webURL, references string
 	var attachments []Attachment
 	var spyPixels SpyPixelInfo
-	err := c.withConn(ctx, func(conn *imapclient.Client) error {
+	err := c.withConnRetry(ctx, func(conn *imapclient.Client) error {
 		if err := c.selectMailbox(folder); err != nil {
 			return err
 		}
@@ -766,7 +812,7 @@ func (c *Client) ScanSpyPixels(ctx context.Context, folder string, uid uint32) (
 		ctx = context.Background()
 	}
 	var spy SpyPixelInfo
-	err := c.withConn(ctx, func(conn *imapclient.Client) error {
+	err := c.withConnRetry(ctx, func(conn *imapclient.Client) error {
 		if err := c.selectMailbox(folder); err != nil {
 			return err
 		}
@@ -795,14 +841,22 @@ func (c *Client) ScanSpyPixels(ctx context.Context, folder string, uid uint32) (
 // extractHTMLPart pulls just the text/html content from raw MIME bytes.
 func extractHTMLPart(raw []byte) string {
 	e, err := message.Read(bytes.NewReader(raw))
-	if err != nil && !message.IsUnknownCharset(err) {
+	if err != nil && !message.IsUnknownCharset(err) && !message.IsUnknownEncoding(err) {
 		return ""
 	}
 	mr := mail.NewReader(e)
 	for {
 		p, err := mr.NextPart()
-		if err != nil {
+		if err == io.EOF {
 			break
+		}
+		if err != nil {
+			if !message.IsUnknownCharset(err) && !message.IsUnknownEncoding(err) {
+				break
+			}
+			if p == nil {
+				continue
+			}
 		}
 		if h, ok := p.Header.(*mail.InlineHeader); ok {
 			ct, _, _ := h.ContentType()
@@ -821,7 +875,7 @@ func (c *Client) FetchRaw(ctx context.Context, folder string, uid uint32) ([]byt
 		ctx = context.Background()
 	}
 	var raw []byte
-	err := c.withConn(ctx, func(conn *imapclient.Client) error {
+	err := c.withConnRetry(ctx, func(conn *imapclient.Client) error {
 		if err := c.selectMailbox(folder); err != nil {
 			return err
 		}
@@ -915,7 +969,9 @@ func (c *Client) EnsureFolders(ctx context.Context, folders []string) ([]string,
 			if err != nil {
 				var imapErr *imap.Error
 				if errors.As(err, &imapErr) && imapErr.Code == imap.ResponseCodeAlreadyExists {
-					continue // already there, nothing to do
+					// Folder exists — still ensure it's subscribed
+					_ = conn.Subscribe(folder).Wait()
+					continue
 				}
 				return fmt.Errorf("CREATE %s: %w", folder, err)
 			}
@@ -1073,7 +1129,7 @@ func (c *Client) SaveDraft(ctx context.Context, folder string, raw []byte) error
 //     preamble (e.g. Substack's "View this post on the web at https://…")
 func parseBody(raw []byte) (markdown, rawHTML, webURL string, attachments []Attachment, references string, spyPixels SpyPixelInfo) {
 	e, err := message.Read(bytes.NewReader(raw))
-	if err != nil && !message.IsUnknownCharset(err) {
+	if err != nil && !message.IsUnknownCharset(err) && !message.IsUnknownEncoding(err) {
 		return string(raw), "", "", nil, "", SpyPixelInfo{}
 	}
 
@@ -1107,9 +1163,10 @@ func parseBody(raw []byte) (markdown, rawHTML, webURL string, attachments []Atta
 			break
 		}
 		if err != nil {
-			if !message.IsUnknownCharset(err) {
+			if !message.IsUnknownCharset(err) && !message.IsUnknownEncoding(err) {
 				break
 			}
+			// Unknown charset/encoding — continue with raw bytes rather than failing
 			if p == nil {
 				continue
 			}

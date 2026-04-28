@@ -3,11 +3,13 @@ package ui
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -1811,7 +1813,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if !m.spyScannedKeys[key] {
 				m.spyScannedKeys[key] = true
-				go saveSpyPixelCache(copyMap(m.spyPixelKeys), copyMap(m.spyScannedKeys))
+				safeGo(func() { saveSpyPixelCache(copyMap(m.spyPixelKeys), copyMap(m.spyScannedKeys)) })
 			}
 		}
 		// Store References header in the email struct for threading
@@ -1822,7 +1824,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		uid := msg.email.UID
 		folder := msg.email.Folder
 		markImmediately := func() {
-			go func() { _ = m.imapCli().MarkSeen(nil, folder, uid) }()
+			safeGo(func() { _ = m.imapCli().MarkSeen(nil, folder, uid) })
 			// Update local state immediately
 			for i := range m.emails {
 				if m.emails[i].UID == uid && m.emails[i].Folder == folder {
@@ -1971,7 +1973,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Timer fired - mark email as read if user is still viewing it
 		if m.state == stateReading && m.markAsReadUID == msg.uid && m.markAsReadFolder == msg.folder {
 			// Still viewing the same email - mark it as read
-			go func() { _ = m.imapCli().MarkSeen(nil, msg.folder, msg.uid) }()
+			safeGo(func() { _ = m.imapCli().MarkSeen(nil, msg.folder, msg.uid) })
 			// Update local state immediately
 			for i := range m.emails {
 				if m.emails[i].UID == msg.uid && m.emails[i].Folder == msg.folder {
@@ -2067,7 +2069,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Save cache and rebuild inbox on the main goroutine.
 		if len(msg.scannedKeys) > 0 {
-			go saveSpyPixelCache(copyMap(m.spyPixelKeys), copyMap(m.spyScannedKeys))
+			safeGo(func() { saveSpyPixelCache(copyMap(m.spyPixelKeys), copyMap(m.spyScannedKeys)) })
 		}
 		return m, m.applyFilter()
 
@@ -2933,6 +2935,32 @@ func saveSpyPixelCache(spyKeys, scannedKeys map[string]bool) {
 	_ = os.WriteFile(config.SpyPixelCachePath(), []byte(strings.Join(lines, "\n")+"\n"), 0600)
 }
 
+// safeGo runs fn in a goroutine with panic recovery. If the goroutine panics,
+// the stack trace is logged to stderr and written to ~/.cache/neomd/crash.log.
+func safeGo(fn func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				stack := debug.Stack()
+				log.Printf("goroutine panic recovered: %v\n%s", r, stack)
+				writeCrashLog(r, stack)
+			}
+		}()
+		fn()
+	}()
+}
+
+// writeCrashLog appends a panic record to the crash log file.
+func writeCrashLog(r interface{}, stack []byte) {
+	path := config.CrashLogPath()
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "=== neomd crash at %s ===\npanic: %v\n%s\n\n", time.Now().Format(time.RFC3339), r, stack)
+}
+
 // copyMap returns a shallow copy of a map, safe for passing to goroutines.
 func copyMap(m map[string]bool) map[string]bool {
 	c := make(map[string]bool, len(m))
@@ -3386,13 +3414,13 @@ func (m Model) openInBrowser() (tea.Model, tea.Cmd) {
 		// xdg-open exits immediately after handing off to the browser process,
 		// so cmd.Wait() returns before the browser has read the file.
 		// Sleep long enough for any browser to finish loading from disk.
-		go func() {
+		safeGo(func() {
 			time.Sleep(15 * time.Second)
 			os.Remove(tmpPath)
 			for _, p := range tmpImages {
 				os.Remove(p)
 			}
-		}()
+		})
 		return nil
 	}
 }
@@ -4030,10 +4058,10 @@ func (m Model) previewInBrowser() (tea.Model, tea.Cmd) {
 	return m, func() tea.Msg {
 		cmd := exec.Command(browser, tmpPath)
 		_ = cmd.Start()
-		go func() {
+		safeGo(func() {
 			time.Sleep(15 * time.Second)
 			os.Remove(tmpPath)
-		}()
+		})
 		return nil
 	}
 }
