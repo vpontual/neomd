@@ -81,18 +81,19 @@ All email-extracted URLs — both numbered inline links (`space+digit`) and `ctr
 
 ## Spy pixel blocking
 
-neomd automatically detects and blocks tracking pixels (1x1 invisible images embedded by newsletter services like Mailchimp, HubSpot, and SendGrid to track email opens).
+neomd automatically detects and blocks tracking pixels using the same two-layer approach as [HEY](https://www.hey.com/features/spy-pixel-blocker/).
 
 **How it works:**
 - The TUI renders emails as styled Markdown via glamour — **no HTTP requests** are made during rendering, so tracking servers are never contacted. Senders cannot tell if you read their email.
-- `detectSpyPixels()` scans raw HTML for `<img>` tags with empty alt AND at least one of: tiny dimensions (width/height 0–1), CSS hiding, or known tracker URL patterns. This runs before markdown conversion so size/style info is preserved.
+- **Layer 1 — Curated denylist:** 150+ tracking services with URL pattern matching (`internal/imap/tracker_list.go`). Sourced from [Simplify](https://github.com/leggett/simplify-trackers) (BSD-3-Clause), [LeaveMeAlone](https://github.com/leavemealone-app/email-trackers) (CC-BY 3.0), and [DHH's original HEY list](https://gist.github.com/dhh/360f4dc7ddbce786f8e82b97cdad9d20) (MIT). Covers major ESPs (Mailchimp, HubSpot, SendGrid, ConvertKit, Substack), sales trackers (Superhuman, Streak, Yesware), and brand trackers (Amazon, Apple, Facebook, LinkedIn, Google, GitHub). When matched, the service name is attributed in the UI.
+- **Layer 2 — Generic 1×1 pixel heuristic:** catches custom/branded tracking domains not on the denylist by detecting `<img>` tags with empty `alt` AND both dimensions 0–1, or CSS hiding (`display:none`). Layout spacers (e.g. 1×50) are not flagged.
 - The inbox list shows a `°` indicator (orange) for emails that contained tracking pixels, visible after first read or after running `<space>S` / `:scan-spy-pixels`.
-- The reader header shows `° N spy pixel(s) blocked (domain.com, ...)` with the tracker domains.
+- The reader header shows `° N spy pixel(s) blocked (ServiceName)` with tracker attribution.
 - Scan results are cached in `~/.cache/neomd/spy_pixels` and persist across restarts. Both positive (has tracker) and negative (scanned clean) results are cached so repeat scans are instant.
 
 **Browser view (`O`):** When you open an email in the browser, a Content-Security-Policy is injected that blocks JavaScript, iframes, and embedded objects (`script-src 'none'; frame-src 'none'; object-src 'none'`). Remote images are intentionally allowed — you're choosing to see the full email. This prevents script execution while preserving the visual experience.
 
-**Code:** [`internal/imap/client.go`](https://github.com/ssp-data/neomd/blob/main/internal/imap/client.go) — `detectSpyPixels()`, `ScanSpyPixels()` · [`internal/render/html.go`](https://github.com/ssp-data/neomd/blob/main/internal/render/html.go) — `SanitizeForBrowser()` · [`internal/ui/inbox.go`](https://github.com/ssp-data/neomd/blob/main/internal/ui/inbox.go) — `°` indicator · [`internal/ui/reader.go`](https://github.com/ssp-data/neomd/blob/main/internal/ui/reader.go) — `renderEmailHeader()`
+**Code:** [`internal/imap/tracker_list.go`](https://github.com/ssp-data/neomd/blob/main/internal/imap/tracker_list.go) — denylist (150+ services) · [`internal/imap/client.go`](https://github.com/ssp-data/neomd/blob/main/internal/imap/client.go) — `detectSpyPixels()`, `ScanSpyPixels()` · [`internal/render/html.go`](https://github.com/ssp-data/neomd/blob/main/internal/render/html.go) — `SanitizeForBrowser()` · [`internal/ui/inbox.go`](https://github.com/ssp-data/neomd/blob/main/internal/ui/inbox.go) — `°` indicator
 
 ---
 

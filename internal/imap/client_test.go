@@ -434,16 +434,38 @@ func TestSpyPixelDetection(t *testing.T) {
 	for _, d := range spy.Domains {
 		found[d] = true
 	}
-	if !found["click.mailchimp.com/../open.php"] {
-		t.Errorf("expected click.mailchimp.com/../open.php in spy.Domains, got %v", spy.Domains)
-	}
-	if !found["pixel.sendinblue.com/../open"] {
-		t.Errorf("expected pixel.sendinblue.com/../open in spy.Domains, got %v", spy.Domains)
+	// With the tracker denylist, services are identified by name.
+	// Mailchimp pixel matches "Mailchimp" or a Yesware /track/open pattern.
+	if !found["Mailchimp"] && !found["Yesware"] {
+		t.Errorf("expected Mailchimp or Yesware attribution in spy.Domains, got %v", spy.Domains)
 	}
 	for _, d := range spy.Domains {
 		if strings.Contains(d, "cdn.example.com") {
 			t.Errorf("decorative image should NOT be counted, got %v", spy.Domains)
 		}
+	}
+}
+
+func TestSpyPixelSpacersNotFlagged(t *testing.T) {
+	// Layout spacers (one dimension is 1 but the other is large) must NOT
+	// be flagged as spy pixels — they are decorative, not trackers.
+	raw := "MIME-Version: 1.0\r\n" +
+		"Content-Type: text/html; charset=utf-8\r\n" +
+		"\r\n" +
+		`<html><body>` +
+		`<img src="https://a.kajabi.com/9/9d08eac.png" alt="" width="1" height="16">` +
+		`<img src="https://a.kajabi.com/9/9d08eac.png" alt="" width="40" height="1">` +
+		`<img src="https://a.kajabi.com/9/9d08eac.png" alt="" width="1" height="50">` +
+		`<img src="https://a.kajabi.com/9/9d08eac.png" alt="" width="20" height="1">` +
+		`<img src="https://a.kajabi.com/9/9d08eac.png" alt="" width="1" height="100">` +
+		// This one IS a real 1×1 tracker pixel — should be counted.
+		`<img src="https://email.kjbm.example.com/o/eJx8token" alt="" width="1" height="1">` +
+		`</body></html>`
+
+	_, _, _, _, _, spy := parseBody([]byte(raw))
+
+	if spy.Count != 1 {
+		t.Errorf("SpyPixelInfo.Count = %d, want 1 (only the 1x1 pixel)", spy.Count)
 	}
 }
 

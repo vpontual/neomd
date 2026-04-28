@@ -1305,26 +1305,35 @@ func isSpyPixel(tag string) bool {
 	if hasNonEmptyAlt {
 		return false
 	}
-	// Check size heuristics: width="1", height="1", width="0", height="0"
-	// The trailing ["\s>] ensures we don't match width="100" etc.
-	if regexp.MustCompile(`(?i)\b(?:width|height)=["']?[01](?:px)?["'\s>]`).MatchString(tag) {
+	// Check size heuristics: only flag as spy pixel when BOTH dimensions are
+	// ≤1 (true 1×1 pixel), or when just one dimension is given and it's 0–1.
+	// Images like 40×1 or 1×50 are layout spacers, not trackers.
+	reW := regexp.MustCompile(`(?i)\bwidth=["']?(\d+)`)
+	reH := regexp.MustCompile(`(?i)\bheight=["']?(\d+)`)
+	wMatch := reW.FindStringSubmatch(tag)
+	hMatch := reH.FindStringSubmatch(tag)
+	hasW := len(wMatch) >= 2
+	hasH := len(hMatch) >= 2
+	isTiny := func(s string) bool { return s == "0" || s == "1" }
+	if hasW && hasH && isTiny(wMatch[1]) && isTiny(hMatch[1]) {
+		return true
+	}
+	if hasW && !hasH && isTiny(wMatch[1]) {
+		return true
+	}
+	if hasH && !hasW && isTiny(hMatch[1]) {
 		return true
 	}
 	// Check CSS hiding: display:none, visibility:hidden
 	if regexp.MustCompile(`(?i)(?:display\s*:\s*none|visibility\s*:\s*hidden)`).MatchString(tag) {
 		return true
 	}
-	// Check known tracker URL patterns in src
+	// Check against the curated tracker denylist (60+ services, 200+ patterns).
 	src := reSpyPixel.FindStringSubmatch(tag)
 	if len(src) >= 2 {
 		u := strings.ToLower(src[1])
-		trackerPatterns := []string{
-			"/track/open", "/track/click", "open.php",
-			"/pixel", "/beacon", "/wf/open", "/o.gif",
-			"list-manage.com/track",
-		}
-		for _, p := range trackerPatterns {
-			if strings.Contains(u, p) {
+		for _, p := range KnownTrackerPatterns {
+			if strings.Contains(u, strings.ToLower(p)) {
 				return true
 			}
 		}
@@ -1344,7 +1353,11 @@ func detectSpyPixels(html string) SpyPixelInfo {
 			spy.Count++
 			src := reSpyPixel.FindStringSubmatch(tag)
 			if len(src) >= 2 {
-				if label := domainPathLabel(src[1]); label != "" && !seen[label] {
+				// Try to attribute to a known service first, fall back to domain/path.
+				if name := IdentifyTracker(src[1]); name != "" && !seen[name] {
+					seen[name] = true
+					spy.Domains = append(spy.Domains, name)
+				} else if label := domainPathLabel(src[1]); label != "" && !seen[label] {
 					seen[label] = true
 					spy.Domains = append(spy.Domains, label)
 				}

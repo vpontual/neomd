@@ -34,13 +34,15 @@ When you press `O` to open in the browser, inline images are extracted from the 
 
 ## Spy Pixel Blocking
 
-neomd automatically detects and blocks tracking pixels (1x1 invisible images used by newsletter services like Mailchimp, HubSpot, and SendGrid to track email opens). Since the TUI renders emails as styled Markdown, remote images are never fetched — senders cannot tell if you read their email.
+neomd automatically detects and blocks tracking pixels, similar to [HEY's spy pixel blocker](https://www.hey.com/features/spy-pixel-blocker/). Since the TUI renders emails as styled Markdown via glamour, remote images are never fetched — senders cannot tell if you read their email.
 
-**Detection method:** neomd scans the raw HTML for `<img>` tags with empty `alt` attributes AND at least one of: tiny dimensions (width/height 0 or 1), CSS hiding (`display:none`), or known tracker URL patterns (`/track/open`, `/pixel`, `/beacon`, etc.). Legitimate decorative images with empty alt text but normal dimensions are not flagged.
+**Two-layer detection** (same approach as HEY):
+1. **Curated denylist** — 150+ tracking services with URL pattern matching, sourced from [Simplify](https://github.com/leggett/simplify-trackers) (BSD-3-Clause), [LeaveMeAlone](https://github.com/leavemealone-app/email-trackers) (CC-BY 3.0), and [DHH's original HEY list](https://gist.github.com/dhh/360f4dc7ddbce786f8e82b97cdad9d20) (MIT). Covers Mailchimp, HubSpot, SendGrid, ConvertKit, Substack, Amazon, Facebook, LinkedIn, and many more. When matched, the service name is shown (e.g. "Mailchimp").
+2. **Generic 1×1 pixel heuristic** — catches custom/branded tracking domains not on the list by detecting `<img>` tags with empty `alt` AND tiny dimensions (both width/height 0–1) or CSS hiding (`display:none`). Layout spacers (e.g. 1×50) are not flagged.
 
 When tracking pixels are detected, neomd shows:
 - `°` indicator in the inbox list (orange, next to the attachment `@` column)
-- `° N spy pixel(s) blocked (domain.com)` in the reader header with tracker domains
+- `° N spy pixel(s) blocked (ServiceName)` in the reader header with tracker attribution
 
 **Scanning:** Spy pixels are detected when you read an email. To scan all emails in the current folder at once, press `<space>S` or run `:scan-spy-pixels` (alias `:ssp`). The scan runs in the background, skips already-scanned emails, and uses IMAP PEEK (won't mark emails as read). Results are cached in `~/.cache/neomd/spy_pixels` and persist across restarts.
 
