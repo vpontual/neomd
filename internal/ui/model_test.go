@@ -641,6 +641,14 @@ func TestIsMimeMismatch(t *testing.T) {
 		{"real mp3", ".mp3", "audio/mpeg", false},
 		{"real mp4", ".mp4", "video/mp4", false},
 
+		// SVG — XML/text-based types are valid, binary is suspicious
+		{"real svg as text/xml", ".svg", "text/xml; charset=utf-8", false},
+		{"real svg as text/plain", ".svg", "text/plain; charset=utf-8", false},
+		{"real svg as text/html", ".svg", "text/html; charset=utf-8", false},
+		{"real svg as image/svg+xml", ".svg", "image/svg+xml", false},
+		{"binary disguised as svg", ".svg", "application/octet-stream", true},
+		{"zip disguised as svg", ".svg", "application/zip", true},
+
 		// Unknown extensions — can't validate, should pass through
 		{"unknown ext .xyz", ".xyz", "text/plain; charset=utf-8", false},
 		{"unknown ext .foo", ".foo", "application/octet-stream", false},

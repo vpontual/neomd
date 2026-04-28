@@ -3478,6 +3478,11 @@ var expectedMimePrefix = map[string]string{
 // isMimeMismatch returns true if the file extension claims to be a safe type
 // but magic-byte detection says otherwise (e.g. a script disguised as .png).
 func isMimeMismatch(ext, detected string) bool {
+	// SVG is XML-based, so DetectContentType returns text/xml, text/plain, or
+	// text/html — all valid for real SVGs. Only flag binary content as suspicious.
+	if ext == ".svg" {
+		return !strings.HasPrefix(detected, "text/") && !strings.HasPrefix(detected, "image/")
+	}
 	expected, ok := expectedMimePrefix[ext]
 	if !ok {
 		return false // unknown extension — can't validate, let it through
