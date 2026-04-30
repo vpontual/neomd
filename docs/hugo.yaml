@@ -68,7 +68,7 @@ menu:
       weight: 120
 
 params:
-  description: "A fast, keyboard-first TUI email client with smart screening"
+  description: "Keyboard-first TUI email: write in Neovim, render as Markdown, screen senders first, organize emails once."
   images:
     - /images/neomd-hero.png
 
