@@ -72,6 +72,22 @@ Folder operations prefer RFC 6851 MOVE; `u` undo uses UIDPLUS destination UIDs c
 - `internal/oauth2/` — OAuth2 flow for Gmail/Office365
 - `internal/integration_test.go` — integration tests (live IMAP/SMTP); lives at package level, not in a sub-package
 
+**Spy pixel detection** (`internal/imap/tracker_list.go` + `client.go`): Two-layer approach — (1) curated denylist of 150+ tracking services in `KnownTrackers` with `IdentifyTracker()` for attribution ("Mailchimp", "HubSpot"); (2) generic 1×1 pixel heuristic via `detectSpyPixels()` on raw HTML. Results flow through `SpyPixelInfo` struct returned by `FetchBody()` and `ScanSpyPixels()`. Cached to `~/.cache/neomd/spy_pixels` (format: `+key` for spy, `-key` for scanned clean).
+
+**IMAP connection resilience** (`internal/imap/client.go`):
+- `withConn()` — no retry, for mutating operations (MOVE, APPEND, STORE)
+- `withConnRetry()` — one automatic retry on network error, for read-only operations (FETCH, SEARCH, STATUS)
+- NOOP health probe after 2+ minutes of inactivity (handles laptop suspend/resume)
+- Charset support: `_ "github.com/emersion/go-message/charset"` blank import registers ISO-8859-1, Windows-1252, etc.
+
+**Goroutine safety** (`internal/ui/model.go`): All background goroutines MUST use `safeGo()` instead of bare `go func()`. It recovers panics and writes stack traces to `~/.cache/neomd/crash.log`.
+
+**Attachment safety** (`internal/ui/model.go`): Two checks before `xdg-open`: (1) `dangerousExts` blocks executable extensions; (2) `isMimeMismatch()` detects magic-byte mismatches (e.g. script disguised as `.png` via `http.DetectContentType()`).
+
+**Browser view** (`internal/render/html.go`): `SanitizeForBrowser()` injects CSP (`script-src 'none'; frame-src 'none'; object-src 'none'`) into raw HTML emails opened with `O`. Remote images are intentionally allowed.
+
+**Config validation** (`internal/config/config.go`): `validate()` runs on load — checks host:port format, port range 1-65535, required fields. Cache path helpers (`CrashLogPath()`, `SpyPixelCachePath()`) use config-name-aware directories for demo/production isolation.
+
 **CI:** GitHub Actions runs `go test ./...` + `go vet ./...` on every PR.
 
 ## Project-Specific Conventions

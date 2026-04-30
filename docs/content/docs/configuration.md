@@ -17,6 +17,7 @@ password = "app-password"
 from     = "Me <me@example.com>"
 starttls = false                    # optional: force STARTTLS (see TLS/STARTTLS section below)
 tls_cert_file = ""                  # optional PEM cert/CA for self-signed local bridges
+imap_disabled = false               # set true for send-only accounts (no IMAP connection)
 
 # OAuth2 authenticated accounts are supported, it just need the relevant fields. Note that the password field is not required.
 [[accounts]]
@@ -176,6 +177,23 @@ If you want Sent and Drafts to follow the selected sending account instead, set:
 ```toml
 store_sent_drafts_in_sending_account = true
 ```
+
+## Send-Only Accounts (`imap_disabled`)
+
+Set `imap_disabled = true` on an account to use it only for sending. Neomd will skip IMAP connection, folder fetching, and screening for that account. The account remains available as a From address via `ctrl+f` in compose/pre-send.
+
+```toml
+[[accounts]]
+name          = "Gmail"
+imap          = "imap.gmail.com:993"
+smtp          = "smtp.gmail.com:587"
+user          = "me@gmail.com"
+password      = "$GMAIL_APP_PASSWORD"
+from          = "Me <me@gmail.com>"
+imap_disabled = true
+```
+
+`ctrl+a` account cycling skips IMAP-disabled accounts. Useful for adding a provider purely for sending without fetching its emails.
 
 ## Sending and Discarding
 

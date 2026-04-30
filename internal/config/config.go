@@ -34,6 +34,8 @@ type AccountConfig struct {
 	STARTTLS    bool   `toml:"starttls"`
 	TLSCertFile string `toml:"tls_cert_file"` // optional PEM CA/cert for self-signed local bridges
 
+	IMAPDisabled bool `toml:"imap_disabled"` // skip IMAP connection; account is send-only
+
 	// OAuth2 fields — only used when auth_type = "oauth2".
 	AuthType           string   `toml:"auth_type"` // "plain" (default) | "oauth2"
 	OAuth2ClientID     string   `toml:"oauth2_client_id"`
@@ -387,14 +389,16 @@ func (cfg *Config) validate() error {
 		if label == "" {
 			label = fmt.Sprintf("accounts[%d]", i)
 		}
-		if a.IMAP == "" {
-			return fmt.Errorf("account %q: imap address is required", label)
+		if !a.IMAPDisabled {
+			if a.IMAP == "" {
+				return fmt.Errorf("account %q: imap address is required", label)
+			}
+			if err := validateHostPort(a.IMAP, label, "imap"); err != nil {
+				return err
+			}
 		}
 		if a.SMTP == "" {
 			return fmt.Errorf("account %q: smtp address is required", label)
-		}
-		if err := validateHostPort(a.IMAP, label, "imap"); err != nil {
-			return err
 		}
 		if err := validateHostPort(a.SMTP, label, "smtp"); err != nil {
 			return err

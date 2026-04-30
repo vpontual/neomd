@@ -317,6 +317,9 @@ func (m Model) writeDebugReport() tea.Cmd {
 			if i == m.accountI {
 				active = " (active)"
 			}
+			if a.IMAPDisabled {
+				active += " (imap disabled)"
+			}
 			b.WriteString(fmt.Sprintf("- **%s**%s\n", a.Name, active))
 			b.WriteString(fmt.Sprintf("  - IMAP: `%s`\n", a.IMAP))
 			b.WriteString(fmt.Sprintf("  - SMTP: `%s`\n", a.SMTP))
@@ -2750,7 +2753,13 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "ctrl+a":
 		if len(m.clients) > 1 {
-			m.accountI = (m.accountI + 1) % len(m.clients)
+			// Skip IMAP-disabled accounts (nil clients).
+			for range m.clients {
+				m.accountI = (m.accountI + 1) % len(m.clients)
+				if m.clients[m.accountI] != nil {
+					break
+				}
+			}
 			m.activeFolderI = 0
 			m.loading = true
 			return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.activeFolder()))

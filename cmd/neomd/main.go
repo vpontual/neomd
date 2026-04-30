@@ -59,9 +59,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Build one IMAP client per account.
+	// Build one IMAP client per account (nil for imap_disabled accounts).
 	imapClients := make([]*goIMAP.Client, 0, len(accounts))
 	for _, acc := range accounts {
+		if acc.IMAPDisabled {
+			imapClients = append(imapClients, nil)
+			continue
+		}
 		h, p := splitAddr(acc.IMAP)
 		// Determine TLS/STARTTLS: respect explicit user config, otherwise infer from port.
 		// Security: non-standard ports default to TLS (e.g., Proton Mail Bridge on 1143).
