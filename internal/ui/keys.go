@@ -44,6 +44,8 @@ var HelpSections = []HelpSection{
 		{"$", "mark as Spam → spam.txt + move to Spam (removes from screened_in/out)"},
 		{"F", "mark as Feed → feed.txt + move to Feed"},
 		{"P", "mark as PaperTrail → papertrail.txt + move to PaperTrail"},
+		{"Di", "approve whole DOMAIN → @domain.tld appended to screened_in.txt (cursor or open email; y/n)"},
+		{"Do", "block whole DOMAIN → @domain.tld appended to screened_out.txt (cursor or open email; y/n)"},
 		{"A", "archive (move to Archive, no screener update)"},
 		{"B", "move to Work/business (no screener update, if configured)"},
 		{"S", "dry-run screen inbox (loaded emails), then y/n"},

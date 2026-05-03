@@ -25,6 +25,7 @@ import (
 	"github.com/sspaeti/neomd/internal/editor"
 	"github.com/sspaeti/neomd/internal/imap"
 	"github.com/sspaeti/neomd/internal/listmonk"
+	"github.com/sspaeti/neomd/internal/notify"
 	"github.com/sspaeti/neomd/internal/render"
 	"github.com/sspaeti/neomd/internal/screener"
 	"github.com/sspaeti/neomd/internal/smtp"
@@ -34,13 +35,13 @@ import (
 type viewState int
 
 const (
-	stateInbox   viewState = iota
-	stateReading           // reading a single email
-	stateCompose           // composing a new email
-	statePresend           // pre-send review: add attachments, then send or edit again
-	stateHelp              // help overlay
-	stateWelcome           // first-run welcome popup
-	stateReaction          // emoji reaction picker
+	stateInbox    viewState = iota
+	stateReading            // reading a single email
+	stateCompose            // composing a new email
+	statePresend            // pre-send review: add attachments, then send or edit again
+	stateHelp               // help overlay
+	stateWelcome            // first-run welcome popup
+	stateReaction           // emoji reaction picker
 )
 
 // async message types
@@ -455,13 +456,22 @@ type autoScreenMove struct {
 	dst   string
 }
 
+// pendingDomainAction queues a domain-level screener mutation awaiting y/n.
+// entry is the storage form ("@ssp.sh"); action is "I" (approve) or "O" (block).
+type pendingDomainAction struct {
+	entry  string
+	action string
+}
+
 // Model is the root bubbletea model.
 type Model struct {
-	cfg      *config.Config
-	accounts []config.AccountConfig // all configured accounts
-	clients  []*imap.Client         // one IMAP client per account
-	accountI int                    // index of the active account
-	screener *screener.Screener
+	cfg         *config.Config
+	accounts    []config.AccountConfig // all configured accounts
+	clients     []*imap.Client         // one IMAP client per account
+	accountI    int                    // index of the active account
+	screener    *screener.Screener
+	notifier    *notify.Notifier
+	notifyState *notify.State
 
 	state   viewState
 	width   int
@@ -487,10 +497,10 @@ type Model struct {
 	openBody        string            // markdown body used by the TUI reader
 	openHTMLBody    string            // original HTML part; used by openInExternalViewer when available
 	openWebURL      string            // canonical "view online" URL for ctrl+o (may be empty)
-	openAttachments []imap.Attachment  // attachments of the currently open email
-	openLinks       []emailLink        // extracted links from the email body
-	openSpyPixels   imap.SpyPixelInfo  // spy pixels detected in the currently open email
-	readerPending   string             // chord prefix in reader (space for link open)
+	openAttachments []imap.Attachment // attachments of the currently open email
+	openLinks       []emailLink       // extracted links from the email body
+	openSpyPixels   imap.SpyPixelInfo // spy pixels detected in the currently open email
+	readerPending   string            // chord prefix in reader (space for link open)
 	// Mark-as-read timer tracking
 	markAsReadUID    uint32 // UID of email with pending mark-as-read timer
 	markAsReadFolder string // folder of email with pending mark-as-read timer
@@ -574,6 +584,12 @@ type Model struct {
 	// being bulk-moved back to Inbox.
 	pendingResetUIDs []uint32
 
+	// pendingDomainOp holds an "@domain" screener entry (e.g. "@ssp.sh")
+	// awaiting y/n confirmation, plus the action to execute ("I" approve,
+	// "O" block). Set by the Di / Do reader chord; cleared on y, n, or any
+	// other key.
+	pendingDomainOp *pendingDomainAction
+
 	// pendingDeleteAll holds UIDs + folder awaiting y/n before permanent deletion.
 	pendingDeleteAll *deleteAllReadyMsg
 
@@ -611,15 +627,17 @@ func New(cfg *config.Config, clients []*imap.Client, sc *screener.Screener, mail
 
 	spyKeys, scannedKeys := loadSpyPixelCache()
 	return Model{
-		cfg:        cfg,
-		accounts:   cfg.ActiveAccounts(),
-		clients:    clients,
-		screener:   sc,
-		state:      stateInbox,
-		loading:    true,
-		folders:    cfg.Folders.TabLabels(),
-		cmdHistory: loadCmdHistory(config.HistoryPath()),
-		cmdHistI:   -1,
+		cfg:         cfg,
+		accounts:    cfg.ActiveAccounts(),
+		clients:     clients,
+		screener:    sc,
+		notifier:    notify.New(cfg.Notifications),
+		notifyState: notify.LoadState(config.NotifyStatePath()),
+		state:       stateInbox,
+		loading:     true,
+		folders:     cfg.Folders.TabLabels(),
+		cmdHistory:  loadCmdHistory(config.HistoryPath()),
+		cmdHistI:    -1,
 		// Note: Spam is intentionally excluded from tabs — use :go-spam to visit.
 		compose:        compose,
 		spinner:        sp,
@@ -1367,6 +1385,52 @@ func (m Model) classifyForScreen(emails []imap.Email) []autoScreenMove {
 	return moves
 }
 
+// execDomainScreen applies a confirmed domain-level screener mutation
+// (Approve or Block on a "@domain" entry). Reloads the active folder so the
+// view reflects any senders that have just been reclassified.
+func (m Model) execDomainScreen(op *pendingDomainAction) (tea.Model, tea.Cmd) {
+	var err error
+	switch op.action {
+	case "I":
+		err = m.screener.Approve(op.entry)
+	case "O":
+		err = m.screener.Block(op.entry)
+	default:
+		m.status = "internal error: unknown domain action"
+		m.isError = true
+		return m, nil
+	}
+	if err != nil {
+		m.status = fmt.Sprintf("Domain screen failed: %v", err)
+		m.isError = true
+		return m, nil
+	}
+	verb := "approved"
+	if op.action == "O" {
+		verb = "blocked"
+	}
+	m.status = fmt.Sprintf("Domain %s %s.", op.entry, verb)
+	m.loading = true
+	return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.activeFolder()))
+}
+
+// maybeNotifyInbox dispatches desktop notifications for the freshly fetched
+// emails. moves describes where each email is heading after auto-screening
+// (pass nil if no auto-screen pass ran). Folder is the IMAP source folder
+// label the fetch came from. No-op when the notifier is disabled.
+func (m Model) maybeNotifyInbox(folder string, emails []imap.Email, moves []autoScreenMove) {
+	if !m.notifier.Enabled() || len(emails) == 0 {
+		return
+	}
+	dstByUID := make(map[uint32]string, len(moves))
+	for _, mv := range moves {
+		if mv.email != nil {
+			dstByUID[mv.email.UID] = mv.dst
+		}
+	}
+	m.notifier.MaybeNotify(m.activeAccount().Name, folder, emails, dstByUID, m.screener, m.notifyState)
+}
+
 // previewAutoScreen classifies the currently loaded inbox emails (no IMAP).
 func (m Model) previewAutoScreen() []autoScreenMove {
 	return m.classifyForScreen(m.emails)
@@ -1765,10 +1829,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(sortCmd, m.fetchFolderCountsCmd())
 			}
 			if moves := m.previewAutoScreen(); len(moves) > 0 {
+				m.maybeNotifyInbox(msg.folder, msg.emails, moves)
 				m.loading = true
 				m.bulkProgress = m.newBulkOp("Screening", len(moves))
 				return m, tea.Batch(sortCmd, m.fetchFolderCountsCmd(), m.spinner.Tick, m.execAutoScreenCmd(moves))
 			}
+		}
+		if msg.folder == m.cfg.Folders.Inbox {
+			m.maybeNotifyInbox(msg.folder, msg.emails, nil)
 		}
 		return m, tea.Batch(sortCmd, m.fetchFolderCountsCmd())
 
@@ -2202,6 +2270,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		moves := m.classifyForScreen(msg.emails)
+		m.maybeNotifyInbox(m.cfg.Folders.Inbox, msg.emails, moves)
 		if len(moves) == 0 {
 			// No moves needed - background sync is complete
 			m.bgSyncInProgress = false
@@ -2453,6 +2522,7 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.pendingMoves = nil
 		m.pendingResetUIDs = nil
 		m.pendingDeleteAll = nil
+		m.pendingDomainOp = nil
 	}
 	m.status = ""
 	m.isError = false
@@ -2500,6 +2570,11 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "M":
 		m.pendingKey = "M"
 		m.status = "move to:  Mi inbox  Ma archive  Mf feed  Mp papertrail  Mt trash  Mo screened-out  Mw waiting  Mc scheduled  Mm someday"
+		return m, nil
+
+	case "D":
+		m.pendingKey = "D"
+		m.status = "domain screen:  Di in (@domain → screened_in)  Do out (@domain → screened_out)  (esc to cancel)"
 		return m, nil
 
 	case ",":
@@ -2618,6 +2693,11 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "y":
+		if m.pendingDomainOp != nil {
+			op := m.pendingDomainOp
+			m.pendingDomainOp = nil
+			return m.execDomainScreen(op)
+		}
 		if m.pendingDeleteAll != nil {
 			p := m.pendingDeleteAll
 			m.pendingDeleteAll = nil
@@ -2641,6 +2721,11 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.spinner.Tick, m.execAutoScreenCmd(moves))
 
 	case "n":
+		if m.pendingDomainOp != nil {
+			m.pendingDomainOp = nil
+			m.status = "Cancelled."
+			return m, nil
+		}
 		if m.pendingDeleteAll != nil || len(m.pendingResetUIDs) > 0 || len(m.pendingMoves) > 0 {
 			m.pendingDeleteAll = nil
 			m.pendingResetUIDs = nil
@@ -3156,6 +3241,32 @@ func (m Model) handleChord(prefix, key string) (tea.Model, tea.Cmd) {
 		}
 		m.status = fmt.Sprintf("unknown: M%s", key)
 
+	case "D":
+		if key != "i" && key != "o" {
+			m.status = fmt.Sprintf("unknown: D%s  (use Di or Do)", key)
+			return m, nil
+		}
+		e := selectedEmail(m.inbox)
+		if e == nil {
+			m.status = "No email selected for domain action."
+			m.isError = true
+			return m, nil
+		}
+		entry := domainEntry(e.From)
+		if entry == "" {
+			m.status = "Selected email has no parseable domain."
+			m.isError = true
+			return m, nil
+		}
+		action := strings.ToUpper(key)
+		m.pendingDomainOp = &pendingDomainAction{entry: entry, action: action}
+		verb := "IN"
+		if action == "O" {
+			verb = "OUT"
+		}
+		m.status = fmt.Sprintf("Screen %s domain %s? (y/n) — affects every future sender at this domain", verb, entry)
+		return m, nil
+
 	case ",":
 		type sortSpec struct {
 			field string
@@ -3238,6 +3349,29 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.reader.GotoTop()
 				return m, nil
 			}
+		case "D": // Di / Do = domain-level screen IN / OUT for the open email
+			if key != "i" && key != "o" {
+				m.status = fmt.Sprintf("unknown: D%s  (use Di or Do)", key)
+				m.isError = true
+				return m, nil
+			}
+			if m.openEmail == nil {
+				return m, nil
+			}
+			entry := domainEntry(m.openEmail.From)
+			if entry == "" {
+				m.status = "Open email has no parseable domain."
+				m.isError = true
+				return m, nil
+			}
+			action := strings.ToUpper(key)
+			m.pendingDomainOp = &pendingDomainAction{entry: entry, action: action}
+			verb := "IN"
+			if action == "O" {
+				verb = "OUT"
+			}
+			m.status = fmt.Sprintf("Screen %s domain %s? (y/n) — affects every future sender at this domain", verb, entry)
+			return m, nil
 		default:
 			// Handle "l[0-9]" pattern (first digit entered, waiting for second)
 			if len(pending) == 2 && pending[0] == 'l' && pending[1] >= '0' && pending[1] <= '9' {
@@ -3253,6 +3387,24 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 			}
+		}
+	}
+
+	// Pending domain-screen confirmation (set by Di / Do chord) — only y/n accepted.
+	if m.pendingDomainOp != nil {
+		switch key {
+		case "y":
+			op := m.pendingDomainOp
+			m.pendingDomainOp = nil
+			return m.execDomainScreen(op)
+		case "n", "esc":
+			m.pendingDomainOp = nil
+			m.status = "Cancelled."
+			return m, nil
+		default:
+			// Any other key cancels the confirmation but does not consume the key.
+			m.pendingDomainOp = nil
+			m.status = ""
 		}
 	}
 
@@ -3328,6 +3480,10 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "G":
 		m.reader.GotoBottom()
+		return m, nil
+	case "D":
+		m.readerPending = "D"
+		m.status = "domain screen:  Di in (@domain → screened_in)  Do out (@domain → screened_out)  (esc to cancel)"
 		return m, nil
 	}
 	var cmd tea.Cmd
@@ -4504,6 +4660,16 @@ func extractEmailAddr(s string) string {
 		}
 	}
 	return strings.TrimSpace(s)
+}
+
+// domainEntry returns the lowercased "@domain.tld" form of from for use as a
+// screener list entry, or an empty string if the address has no '@' part.
+func domainEntry(from string) string {
+	addr := strings.ToLower(extractEmailAddr(from))
+	if i := strings.IndexByte(addr, '@'); i >= 0 {
+		return addr[i:]
+	}
+	return ""
 }
 
 // extractName extracts the name part from "Name <email@example.com>" format.
