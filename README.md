@@ -150,7 +150,7 @@ Keep your inbox clean without effort.
 - **Auto-screen on load** — screener runs automatically every time the Inbox loads (startup, `R`); keeps your inbox clean without pressing `S` (configurable, on by default) [→](https://neomd.ssp.sh/docs/screener/#auto-screen-and-background-sync)
 - **Whole-domain screening** — list entries beginning with `@` (e.g. `@ssp.sh`) match every address at that domain; per-address entries always win over a domain rule so a single blocked address inside an otherwise-approved domain stays blocked; press `Di` / `Do` to append `@<domain>` to your lists with a `y/n` confirm [→](https://neomd.ssp.sh/docs/screener/#domain-entries)
 - **Background sync** — while neomd is open, inbox is fetched and screened every 5 minutes in the background; interval configurable, set to `0` to disable [→](https://neomd.ssp.sh/docs/screener/#auto-screen-and-background-sync)
-- **Headless daemon mode** — run `neomd --headless` on a server to continuously screen emails without the TUI; watches screener list files for changes via Syncthing; perfect for running on a NAS while using the TUI on laptop/Android [→](https://neomd.ssp.sh/docs/configurations/headless/)
+- **Headless daemon mode** — run `neomd --headless` on a server to continuously screen emails without the TUI; watches screener list files for changes via Syncthing; perfect for running on a NAS while using the TUI on laptop/Android [→](https://neomd.ssp.sh/docs/configuration/headless/)
 - **Desktop notifications for VIP senders** — opt-in `[notifications]` block fires `notify-send` only for senders/domains you list in `notify.txt`; independent of screener categories; first run silently records a baseline so you don't get flooded [→](https://neomd.ssp.sh/docs/notifications/)
 - **Folder tabs** — Inbox, ToScreen, Feed, PaperTrail, Archive, Waiting, Someday, Scheduled, Sent, Trash, ScreenedOut [→](https://neomd.ssp.sh/docs/keybindings/#folders)
 
@@ -185,7 +185,7 @@ Keep your inbox clean without effort.
 ### Under the Hood
 
 - **IMAP + SMTP** — direct connection via RFC 6851 MOVE, no local sync daemon required; stays in sync if you use it on mobile or different device [→](https://neomd.ssp.sh/docs/configuration/)
-- **RFC 5322 compliant email delivery** — Message-IDs use sender's domain, proper MIME multipart/alternative structure (text/plain before text/html), quoted-printable encoding, and all required headers; ensures deliverability across all providers, spam filter compatibility, and correct email threading [→](https://neomd.ssp.sh/docs/configurations/email-standards/)
+- **RFC 5322 compliant email delivery** — Message-IDs use sender's domain, proper MIME multipart/alternative structure (text/plain before text/html), quoted-printable encoding, and all required headers; ensures deliverability across all providers, spam filter compatibility, and correct email threading [→](https://neomd.ssp.sh/docs/configuration/email-standards/)
 - **Kanagawa theme** — colors from the [kanagawa.nvim](https://github.com/rebelot/kanagawa.nvim) palette
 
 > [!NOTE]
@@ -225,12 +225,12 @@ yay -S neomd-bin
 
 On first run, neomd:
 1. Creates `~/.config/neomd/config.toml` with placeholders — fill in your IMAP/SMTP credentials
-    - Important: Make sure that the Capitalization and naming of folder in `config.toml` is accroding to webmail IMAP, e.g. [Gmails](docs/content/docs/configurations/gmail.md) uses `sent = "[Gmail]/Sent Mail"` and not `sent` etc. 
+    - Important: Make sure that the Capitalization and naming of folder in `config.toml` is accroding to webmail IMAP, e.g. [Gmails](docs/content/docs/configuration/gmail.md) uses `sent = "[Gmail]/Sent Mail"` and not `sent` etc. 
 2. Creates `~/.config/neomd/lists/` for screener allowlists (or uses your custom paths from config)
 3. Creates any missing IMAP folders (ToScreen, Feed, PaperTrail, etc.) automatically
 
 
-Neomd also runs on Android (more for fun) — see [docs/content/docs/configurations/android.md](docs/content/docs/android.md).
+Neomd also runs on Android (more for fun) — see [docs/content/docs/configuration/android.md](docs/content/docs/android.md).
 
 ## Configuration
 
@@ -260,11 +260,11 @@ spam         = "~/.config/neomd/lists/spam.txt"
 
 Use an app-specific password (Gmail, Fastmail, Hostpoint, etc.) rather than your main account password. The `password` and `user` fields support environment variable expansion (`$VAR` or `${VAR}`) so you can avoid storing secrets in the config file.
 
-For the full configuration reference including multiple accounts, OAuth2 authentication, `[[senders]]` aliases, folder customization, signatures, and UI options, see [docs/content/docs/configuration.md](docs/content/docs/configuration.md).
+For the full configuration reference including multiple accounts, OAuth2 authentication, `[[senders]]` aliases, folder customization, signatures, and UI options, see [docs/content/docs/configuration](docs/content/docs/configuration/_index.md).
 
 **Provider-specific guides:**
-- Gmail: [docs/content/docs/configurations/gmail.md](docs/content/docs/configurations/gmail.md) — folder name mapping and OAuth2 setup
-- Proton Mail Bridge: [docs/content/docs/configurations/proton-bridge.md](docs/content/docs/configurations/proton-bridge.md) — non-standard port configuration
+- Gmail: [docs/content/docs/configuration/gmail.md](docs/content/docs/configuration/gmail.md) — folder name mapping and OAuth2 setup
+- Proton Mail Bridge: [docs/content/docs/configuration/proton-bridge.md](docs/content/docs/configuration/proton-bridge.md) — non-standard port configuration
 
 ### Onboarding
 
@@ -375,7 +375,7 @@ Interestingly, Gmail benchmarks fast on a **fresh single connection** (`scripts/
 
 
 > [!NOTE]
-> **Gmail is not recommended.** If you're on Gmail, consider a dedicated email provider (Hostpoint, Fastmail, HEY, Migadu, etc.) for the best neomd experience. Or use Gmail just for fun :). See [docs/content/docs/configurations/gmail.md](docs/content/docs/configurations/gmail.md) for Gmail-specific folder configuration.
+> **Gmail is not recommended.** If you're on Gmail, consider a dedicated email provider (Hostpoint, Fastmail, HEY, Migadu, etc.) for the best neomd experience. Or use Gmail just for fun :). See [docs/content/docs/configuration/gmail.md](docs/content/docs/configuration/gmail.md) for Gmail-specific folder configuration.
 
 **Test your own provider:**
 ```bash

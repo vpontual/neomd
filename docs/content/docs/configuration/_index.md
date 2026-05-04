@@ -1,6 +1,8 @@
 ---
-title: Configuration Reference
+title: Configurations
 weight: 1
+sidebar:
+  open: false
 ---
 
 On first run, neomd creates `~/.config/neomd/config.toml` with placeholders.
@@ -88,7 +90,7 @@ Connect: [LinkedIn](https://example.com/)
 
 
 {{< callout type="info" >}}
-**Gmail** uses different IMAP folder names (`[Gmail]/Sent Mail`, `[Gmail]/Trash`, etc.). See [Gmail Configuration](configurations/gmail) for the correct mapping.
+**Gmail** uses different IMAP folder names (`[Gmail]/Sent Mail`, `[Gmail]/Trash`, etc.). See [Gmail Configuration](gmail/) for the correct mapping.
 {{< /callout >}}
 
 Use an app-specific password (Gmail, Fastmail, Hostpoint, etc.) rather than your main account password.
@@ -152,7 +154,7 @@ smtp = "mail.custom.com:2587"
 starttls = true  # Forces STARTTLS instead of TLS
 ```
 
-See [Proton Bridge Setup](configurations/proton-bridge) for complete Proton Mail Bridge setup instructions.
+See [Proton Bridge Setup](proton-bridge) for complete Proton Mail Bridge setup instructions.
 
 For localhost/self-signed bridges such as Proton Mail Bridge, neomd first tries
 normal certificate verification. If that fails with an unknown-authority error
@@ -286,3 +288,13 @@ The scopes required depends on the provider and is better confirmed by your emai
 
 - To enable OAuth2 authentication for Office365 accounts, follow the documentation [here](https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth)
 - For GMAIL, follow the documentation [here](https://developers.google.com/workspace/gmail/imap/xoauth2-protocol)
+
+
+## Dedicated Platforms
+
+
+- [Gmail Configuration](gmail/)
+- [Proton Mail Bridge](proton-bridge/)
+- [Android (Termux)](android/)
+- [Headless Daemon Mode](headless/)
+- [Email Standards](email-standards/)

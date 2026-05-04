@@ -94,7 +94,7 @@ This makes impersonation attempts easy to spot: if you've already screened in `i
 
 Emails are only auto-screened while they are in the **Inbox**. Once moved to ToScreen (or any other folder), they are not re-classified automatically. This keeps the logic simple and predictable.
 
-If emails end up in ToScreen incorrectly (e.g. screened by another device like [Termux with Android](configurations/android) with incomplete lists), use `:reset-toscreen` to move them back to Inbox where auto-screen will re-classify them.
+If emails end up in ToScreen incorrectly (e.g. screened by another device like [Termux with Android](configuration/android) with incomplete lists), use `:reset-toscreen` to move them back to Inbox where auto-screen will re-classify them.
 
 ## Colon commands
 

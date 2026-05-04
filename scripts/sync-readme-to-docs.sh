@@ -60,9 +60,9 @@ END {
   }
 }
 ' | sed \
-  -e 's|docs/gmail\.md|configurations/gmail|g' \
-  -e 's|docs/proton-bridge\.md|configurations/proton-bridge|g' \
-  -e 's|docs/android\.md|configurations/android|g' \
+  -e 's|docs/gmail\.md|configuration/gmail|g' \
+  -e 's|docs/proton-bridge\.md|configuration/proton-bridge|g' \
+  -e 's|docs/android\.md|configuration/android|g' \
   -e 's|docs/configuration\.md|configuration|g' \
   -e 's|docs/keybindings\.md|keybindings|g' \
   -e 's|docs/screener\.md|screener|g' \
