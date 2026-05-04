@@ -68,6 +68,11 @@ toc: false
 
 <br>
 
+![neomd demo](/images/neomd-hero.png)
+*Reading newsletter directly in your email client (feed) - see spy pixel, if you have replied (dot) and thread mode if replied)*
+
+<br>
+
 <div class="hx-mt-12 hx-mb-8">
 <h2 class="hx-text-4xl hx-font-bold hx-tracking-tight hx-text-gray-900 dark:hx-text-gray-50">Video Demo - YouTube rundown of most features:</h2>
 </div>
