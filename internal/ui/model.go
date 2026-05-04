@@ -1467,7 +1467,10 @@ func (m *Model) maybeNotifyInbox(folder string, emails []imap.Email, moves []aut
 			dstByUID[mv.email.UID] = m.cfg.Folders.LabelFor(mv.dst)
 		}
 	}
-	res := m.notifier.MaybeNotify(m.activeAccount().Name, folderLabel, emails, dstByUID, m.screener, m.notifyState)
+	// State key uses the IMAP folder name (stable across upgrades — the
+	// label may change as we rename folders or add aliases). The label is
+	// only used for the allowlist comparison.
+	res := m.notifier.MaybeNotify(m.activeAccount().Name, folder, folderLabel, emails, dstByUID, m.screener, m.notifyState)
 	switch {
 	case res.Failed > 0:
 		m.status = fmt.Sprintf("Notification command failed (%d): %s", res.Failed, res.Err)

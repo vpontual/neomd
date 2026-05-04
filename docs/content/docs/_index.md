@@ -168,8 +168,6 @@ Keep your inbox clean without effort.
 
 ### Reading
 
-Navigate and consume email at terminal speed.
-
 - **Threaded inbox** — related emails grouped together with a vertical connector line (`│`/`╰`), Twitter-style; threads detected via `In-Reply-To`/`Message-ID` headers with a subject+participant fallback; newest reply on top, root at bottom; `·` reply indicator shows which emails you've answered [→](https://neomd.ssp.sh/docs/reading/#threaded-inbox)
 - **Conversation view** — `T` or `:thread` shows the full conversation across folders (Inbox, Sent, Archive, etc.) in a temporary tab with `[Folder]` prefix; see your replies alongside received emails [→](https://neomd.ssp.sh/docs/reading/#conversation-view)
 - **Link opener** — links in emails are numbered `[1]`–`[0]` in the reader header; press `space+digit` to open in `$BROWSER` [→](https://neomd.ssp.sh/docs/reading/#links)
@@ -180,8 +178,6 @@ Navigate and consume email at terminal speed.
 - **Search** — `/` filters loaded emails in-memory; `space /` or `:search` runs IMAP SEARCH across all folders (fetching headers, capped at 100 per folder) with results in a temporary "Search" tab; supports `from:`, `subject:`, `to:` prefixes [→](https://neomd.ssp.sh/docs/keybindings/#leader-key-mappings-space-prefix)
 
 ### Standard Email Features
-
-The expected stuff, done well.
 
 - **CC, BCC, Reply-all** — optional Cc/Bcc fields (toggle with `ctrl+b`); `R` in the reader replies to sender + all CC recipients [→](https://neomd.ssp.sh/docs/sending/#cc-bcc-reply-all-and-forward)
 - **Drafts** — `d` in pre-send saves to Drafts (IMAP APPEND); `E` in the reader re-opens a draft as an editable compose; compose sessions are auto-backed up to `~/.cache/neomd/drafts/` so you never lose an unsent email (`:recover` to reopen) [→](https://neomd.ssp.sh/docs/sending/#drafts)

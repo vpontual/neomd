@@ -75,11 +75,11 @@ func TestMaybeNotify_FirstRunBaselineSilent(t *testing.T) {
 		{UID: 100, From: "vip@example.com", Subject: "hi"},
 		{UID: 101, From: "other@example.com", Subject: "hello"},
 	}
-	res := n.MaybeNotify("acct", "Inbox", emails, nil, sc, state)
+	res := n.MaybeNotify("acct", "INBOX", "Inbox", emails, nil, sc, state)
 	if res.Sent != 0 {
 		t.Errorf("first run sent = %d, want 0 (baseline-only pass)", res.Sent)
 	}
-	uid, ok := state.Get(stateKey("acct", "Inbox"))
+	uid, ok := state.Get(stateKey("acct", "INBOX"))
 	if !ok || uid != 101 {
 		t.Errorf("baseline = (%d, %v), want (101, true)", uid, ok)
 	}
@@ -88,7 +88,7 @@ func TestMaybeNotify_FirstRunBaselineSilent(t *testing.T) {
 func TestMaybeNotify_OnlyNewEmailsFromNotifyList(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	state := LoadState(statePath)
-	state.Set(stateKey("acct", "Inbox"), 100)
+	state.Set(stateKey("acct", "INBOX"), 100)
 
 	sc := newScreener(t, []string{"vip@example.com"})
 	n := New(config.NotificationsConfig{Enabled: true, Command: "true", Folders: []string{"Inbox"}})
@@ -98,7 +98,7 @@ func TestMaybeNotify_OnlyNewEmailsFromNotifyList(t *testing.T) {
 		{UID: 101, From: "vip@example.com", Subject: "new!"},    // new + on notify list
 		{UID: 102, From: "other@example.com", Subject: "noise"}, // new but not on notify list
 	}
-	res := n.MaybeNotify("acct", "Inbox", emails, nil, sc, state)
+	res := n.MaybeNotify("acct", "INBOX", "Inbox", emails, nil, sc, state)
 	if res.Sent != 1 {
 		t.Errorf("sent = %d, want 1", res.Sent)
 	}
@@ -107,7 +107,7 @@ func TestMaybeNotify_OnlyNewEmailsFromNotifyList(t *testing.T) {
 func TestMaybeNotify_DomainEntry(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	state := LoadState(statePath)
-	state.Set(stateKey("acct", "Inbox"), 0)
+	state.Set(stateKey("acct", "INBOX"), 0)
 
 	sc := newScreener(t, []string{"@important.org"})
 	n := New(config.NotificationsConfig{Enabled: true, Command: "true", Folders: []string{"Inbox"}})
@@ -117,16 +117,46 @@ func TestMaybeNotify_DomainEntry(t *testing.T) {
 		{UID: 2, From: "bob@important.org", Subject: "y"},
 		{UID: 3, From: "spam@nowhere.com", Subject: "z"},
 	}
-	res := n.MaybeNotify("acct", "Inbox", emails, nil, sc, state)
+	res := n.MaybeNotify("acct", "INBOX", "Inbox", emails, nil, sc, state)
 	if res.Sent != 2 {
 		t.Errorf("sent = %d, want 2 (both @important.org senders)", res.Sent)
+	}
+}
+
+func TestMaybeNotify_StateKeyUsesIMAPNotLabel(t *testing.T) {
+	// Regression: an earlier change normalised sourceFolder to a UI label
+	// before computing the state key, which silently invalidated every
+	// existing user's baseline (Personal|INBOX → Personal|Inbox) and gave
+	// them a free first-run baseline pass on upgrade.
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	state := LoadState(statePath)
+	state.Set("acct|INBOX", 100) // pre-existing user state, IMAP-name-keyed
+
+	sc := newScreener(t, []string{"vip@example.com"})
+	n := New(config.NotificationsConfig{Enabled: true, Command: "true", Folders: []string{"Inbox"}})
+
+	// Caller passes IMAP name "INBOX" + label "Inbox" — MaybeNotify must
+	// look up state under the IMAP name so the existing baseline applies.
+	emails := []imap.Email{
+		{UID: 99, From: "vip@example.com", Subject: "old"},  // ≤ baseline → skip
+		{UID: 105, From: "vip@example.com", Subject: "new"}, // > baseline → notify
+	}
+	res := n.MaybeNotify("acct", "INBOX", "Inbox", emails, nil, sc, state)
+	if !res.HadBaseline {
+		t.Fatal("HadBaseline should be true — pre-seeded baseline must be found via IMAP key")
+	}
+	if res.Baseline != 100 {
+		t.Errorf("Baseline = %d, want 100 (the pre-seeded value)", res.Baseline)
+	}
+	if res.Sent != 1 {
+		t.Errorf("Sent = %d, want 1 (the new VIP)", res.Sent)
 	}
 }
 
 func TestMaybeNotify_FolderAllowlistFiltersOut(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	state := LoadState(statePath)
-	state.Set(stateKey("acct", "Inbox"), 0)
+	state.Set(stateKey("acct", "INBOX"), 0)
 
 	sc := newScreener(t, []string{"vip@example.com"})
 	n := New(config.NotificationsConfig{Enabled: true, Command: "true", Folders: []string{"Inbox"}})
@@ -136,7 +166,7 @@ func TestMaybeNotify_FolderAllowlistFiltersOut(t *testing.T) {
 	}
 	// Email is auto-screened to Feed → allowlist excludes it.
 	dst := map[uint32]string{5: "Feed"}
-	res := n.MaybeNotify("acct", "Inbox", emails, dst, sc, state)
+	res := n.MaybeNotify("acct", "INBOX", "Inbox", emails, dst, sc, state)
 	if res.Sent != 0 {
 		t.Errorf("sent = %d, want 0 (Feed not in allowlist)", res.Sent)
 	}

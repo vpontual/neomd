@@ -96,28 +96,37 @@ type Result struct {
 	MaxUIDObserved uint32 // highest UID seen in this batch
 }
 
-// MaybeNotify processes a freshly fetched batch of emails from sourceFolder.
-// For each email with UID > the per-(account, folder) baseline whose sender is
-// in the screener notify list and whose post-screening destination is in the
-// configured Folders allowlist, a notification fires.
+// MaybeNotify processes a freshly fetched batch of emails from a folder.
+// For each email with UID > the per-(account, folder) baseline whose sender
+// is in the screener notify list and whose post-screening destination is in
+// the configured Folders allowlist, a notification fires.
 //
 // First-run behaviour: when no baseline exists yet, MaybeNotify silently
 // records the highest UID it saw and fires *no* notifications — this prevents
 // the entire current Inbox from notifying the first time the feature is
 // enabled.
 //
-// dstByUID maps a UID to the folder label where the email is *about to* live
-// after auto-screening (caller computes this from screener.ClassifyForScreen).
-// UIDs missing from dstByUID are assumed to stay in sourceFolder.
+// sourceIMAP is the raw IMAP folder name (e.g. "INBOX", "HEY/Paper Trail")
+// and is used as the persisted state key — keeping that stable means a user
+// upgrading from an older neomd build never gets re-baselined.
+//
+// sourceLabel is the UI label for sourceIMAP (e.g. "Inbox", "PaperTrail")
+// and is what the allowlist check compares against. When sourceIMAP and
+// sourceLabel are identical (default folder names), the two arguments can
+// be the same string.
+//
+// dstByUID maps a UID to the destination folder *label* (not IMAP name)
+// where the email is about to live after auto-screening. UIDs missing from
+// dstByUID are assumed to stay in sourceLabel for the allowlist check.
 //
 // Returns a Result describing how many notifications fired and the last
 // error encountered (if any).
-func (n *Notifier) MaybeNotify(account, sourceFolder string, emails []imap.Email, dstByUID map[uint32]string, sc *screener.Screener, state *State) Result {
+func (n *Notifier) MaybeNotify(account, sourceIMAP, sourceLabel string, emails []imap.Email, dstByUID map[uint32]string, sc *screener.Screener, state *State) Result {
 	var res Result
 	if !n.Enabled() || sc == nil || state == nil || len(emails) == 0 {
 		return res
 	}
-	key := stateKey(account, sourceFolder)
+	key := stateKey(account, sourceIMAP)
 	baseline, hadBaseline := state.Get(key)
 	res.HadBaseline = hadBaseline
 	res.Baseline = baseline
@@ -138,7 +147,7 @@ func (n *Notifier) MaybeNotify(account, sourceFolder string, emails []imap.Email
 		res.MatchedNotify++
 		dst, ok := dstByUID[e.UID]
 		if !ok {
-			dst = sourceFolder
+			dst = sourceLabel
 		}
 		if !n.cfg.FolderAllowed(dst) {
 			continue
