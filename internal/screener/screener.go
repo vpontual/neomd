@@ -47,6 +47,7 @@ type Config struct {
 	Feed        string
 	PaperTrail  string
 	Spam        string
+	Notify      string // optional: addresses (or @domain) to fire desktop notifications for
 }
 
 // Screener holds loaded allowlists in memory for fast classification.
@@ -57,6 +58,7 @@ type Screener struct {
 	feed        map[string]bool
 	paperTrail  map[string]bool
 	spam        map[string]bool
+	notify      map[string]bool
 }
 
 // Snapshot is a point-in-time copy of all screener list files and in-memory sets.
@@ -79,6 +81,7 @@ func New(cfg Config) (*Screener, error) {
 		feed:        make(map[string]bool),
 		paperTrail:  make(map[string]bool),
 		spam:        make(map[string]bool),
+		notify:      make(map[string]bool),
 	}
 	for path, m := range map[string]map[string]bool{
 		cfg.ScreenedIn:  s.screenedIn,
@@ -86,7 +89,11 @@ func New(cfg Config) (*Screener, error) {
 		cfg.Feed:        s.feed,
 		cfg.PaperTrail:  s.paperTrail,
 		cfg.Spam:        s.spam,
+		cfg.Notify:      s.notify,
 	} {
+		if path == "" {
+			continue
+		}
 		if err := loadList(path, m); err != nil {
 			return nil, fmt.Errorf("load screener list %s: %w", path, err)
 		}
@@ -120,19 +127,40 @@ func (s *Screener) AllAddresses() []string {
 
 // Classify returns the category for a given "from" email address.
 // The address is normalised to lowercase before matching.
+//
+// List entries can be either an exact email ("john@ssp.sh") or a domain
+// prefixed with "@" ("@ssp.sh") that matches any address at that domain.
+// Exact matches always win over domain matches: an exact entry in any list
+// is consulted before the @-domain entries in the same priority pass, but
+// crucially the per-list priority itself (spam > out > feed > papertrail >
+// in) is preserved across both passes by iterating the lists in order twice.
 func (s *Screener) Classify(from string) Category {
 	addr := normalise(from)
 	switch {
 	case s.spam[addr]:
-		return CategorySpam // spam wins over everything
+		return CategorySpam
 	case s.screenedOut[addr]:
-		return CategoryScreenedOut // hard block
+		return CategoryScreenedOut
 	case s.feed[addr]:
-		return CategoryFeed // specific routing beats generic approval
+		return CategoryFeed
 	case s.paperTrail[addr]:
 		return CategoryPaperTrail
 	case s.screenedIn[addr]:
-		return CategoryInbox // trusted but no specific folder → stay in Inbox
+		return CategoryInbox
+	}
+	// No exact match — try @domain entries in the same priority order so a
+	// per-address override remains stronger than a domain rule.
+	switch {
+	case domainMatch(addr, s.spam):
+		return CategorySpam
+	case domainMatch(addr, s.screenedOut):
+		return CategoryScreenedOut
+	case domainMatch(addr, s.feed):
+		return CategoryFeed
+	case domainMatch(addr, s.paperTrail):
+		return CategoryPaperTrail
+	case domainMatch(addr, s.screenedIn):
+		return CategoryInbox
 	default:
 		return CategoryToScreen
 	}
@@ -143,6 +171,54 @@ func (s *Screener) Classify(from string) Category {
 func (s *Screener) ClassifyDebug(from string) (Category, string) {
 	addr := normalise(from)
 	return s.Classify(from), addr
+}
+
+// ShouldNotify reports whether a desktop notification should fire for this
+// sender. True when from (or its domain via "@domain.tld") is in notify.txt.
+// Independent of the screening Category: notify and screening are orthogonal.
+func (s *Screener) ShouldNotify(from string) bool {
+	if len(s.notify) == 0 {
+		return false
+	}
+	return matchAddr(normalise(from), s.notify)
+}
+
+// matchAddr returns true if addr is in set, either as an exact email or as
+// a "@domain" entry covering its domain. addr must already be normalised.
+func matchAddr(addr string, set map[string]bool) bool {
+	if set[addr] {
+		return true
+	}
+	return domainMatch(addr, set)
+}
+
+// AddNotify appends a sender (or "@domain" entry) to notify.txt.  No-op when
+// the entry is already present or when no notify list is configured.
+// Independent of the screening category — does not touch screened_in /
+// screened_out / feed / papertrail / spam.
+func (s *Screener) AddNotify(from string) error {
+	if s.cfg.Notify == "" {
+		return fmt.Errorf("notify list path not configured (set [screener].notify in config.toml)")
+	}
+	return s.addToList(s.cfg.Notify, s.notify, from)
+}
+
+// RemoveNotify deletes a sender (or "@domain" entry) from notify.txt.
+func (s *Screener) RemoveNotify(from string) error {
+	if s.cfg.Notify == "" {
+		return nil
+	}
+	return s.removeFromList(s.cfg.Notify, s.notify, from)
+}
+
+// domainMatch returns true only via the "@domain" form (skipping the exact
+// check). Used by Classify so that the priority loop can be split into an
+// exact-match pass first, then a domain-match pass.
+func domainMatch(addr string, set map[string]bool) bool {
+	if i := strings.IndexByte(addr, '@'); i >= 0 {
+		return set[addr[i:]]
+	}
+	return false
 }
 
 // Approve adds addr to screened_in.txt and removes it from all conflicting lists.
@@ -380,7 +456,9 @@ func (s *Screener) addToList(path string, m map[string]bool, from string) error 
 	return nil
 }
 
-// loadList reads a one-address-per-line file into a set.
+// loadList reads a one-address-per-line file into a set.  Full-line and
+// inline "# comment" suffixes are stripped — `addr@example.com  # note`
+// stores `addr@example.com`, matching the documented examples.
 func loadList(path string, m map[string]bool) error {
 	f, err := os.Open(path)
 	if os.IsNotExist(err) {
@@ -395,6 +473,12 @@ func loadList(path string, m map[string]bool) error {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
+		}
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			line = strings.TrimSpace(line[:i])
+			if line == "" {
+				continue
+			}
 		}
 		m[normalise(line)] = true
 	}

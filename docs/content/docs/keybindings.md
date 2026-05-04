@@ -57,6 +57,8 @@ To update both the help overlay and this document at once, edit that file and ru
 | `$` | mark as Spam → spam.txt + move to Spam (removes from screened_in/out) |
 | `F` | mark as Feed → feed.txt + move to Feed |
 | `P` | mark as PaperTrail → papertrail.txt + move to PaperTrail |
+| `Di` | approve whole DOMAIN → @domain.tld appended to screened_in.txt (cursor or open email; y/n) |
+| `Do` | block whole DOMAIN → @domain.tld appended to screened_out.txt (cursor or open email; y/n) |
 | `A` | archive (move to Archive, no screener update) |
 | `B` | move to Work/business (no screener update, if configured) |
 | `S` | dry-run screen inbox (loaded emails), then y/n |
@@ -98,6 +100,8 @@ To update both the help overlay and this document at once, edit that file and ru
 | `<space>/` | IMAP search ALL emails on server (From + Subject) |
 | `<space>S` | scan current folder for spy pixels (skips already scanned) |
 | `<space>d  (reader)` | download raw email source (.eml) to ~/Downloads |
+| `<space>n  (reader)` | append open email's sender to notify.txt (desktop notifications opt-in) |
+| `<space>N  (reader)` | append @domain of open email's sender to notify.txt |
 | `<space>w` | show welcome screen |
 
 
@@ -166,6 +170,7 @@ To update both the help overlay and this document at once, edit that file and ru
 | `:create-folders  / :cf` | create missing IMAP folders from config (safe, idempotent) |
 | `:go-spam  / :spam` | open Spam folder (not in tab rotation) |
 | `:debug  / :dbg` | diagnostic report — IMAP ping, config, folders, state (saved to /tmp/neomd/debug.log) |
+| `:notify-test  / :nt` | fire a single test desktop notification using the current [notifications] config |
 | `:quit  / :q` | quit neomd |
 
 

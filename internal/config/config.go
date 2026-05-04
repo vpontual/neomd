@@ -59,6 +59,18 @@ type ScreenerConfig struct {
 	Feed        string `toml:"feed"`
 	PaperTrail  string `toml:"papertrail"`
 	Spam        string `toml:"spam"`
+	Notify      string `toml:"notify"` // optional: addresses or @domain entries that fire desktop notifications
+}
+
+// NotificationsConfig controls desktop notifications for emails landing in
+// folders the user cares about, scoped to senders listed in screener.notify.
+// TUI-only: the headless daemon never fires notifications.
+type NotificationsConfig struct {
+	Enabled  bool     `toml:"enabled"`   // opt-in, default false
+	Command  string   `toml:"command"`   // notify binary, default "notify-send"
+	Icon     string   `toml:"icon"`      // -i/--icon arg, default "mail-message-new"
+	ExpireMs int      `toml:"expire_ms"` // -t arg in milliseconds, default 5000
+	Folders  []string `toml:"folders"`   // folder labels (e.g. "Inbox") to fire on; default ["Inbox"]
 }
 
 // FoldersConfig maps logical names to actual IMAP mailbox names.
@@ -104,6 +116,46 @@ var keyToLabel = map[string]string{
 	"work":         "Work",
 }
 
+// LabelFor returns the UI label (e.g. "Inbox", "PaperTrail") for a configured
+// IMAP folder name. Useful for matching user-facing config (which uses labels)
+// against runtime values (which use IMAP names — they may differ, e.g. Gmail's
+// "[Gmail]/All Mail" or HEY's "HEY/Paper Trail"). Returns the input
+// unchanged if no mapping exists, so the caller can fall back to direct
+// string comparison.
+func (f FoldersConfig) LabelFor(imapName string) string {
+	switch imapName {
+	case f.Inbox:
+		return "Inbox"
+	case f.Sent:
+		return "Sent"
+	case f.Trash:
+		return "Trash"
+	case f.Drafts:
+		return "Drafts"
+	case f.ToScreen:
+		return "ToScreen"
+	case f.Feed:
+		return "Feed"
+	case f.PaperTrail:
+		return "PaperTrail"
+	case f.ScreenedOut:
+		return "ScreenedOut"
+	case f.Archive:
+		return "Archive"
+	case f.Waiting:
+		return "Waiting"
+	case f.Scheduled:
+		return "Scheduled"
+	case f.Someday:
+		return "Someday"
+	case f.Spam:
+		return "Spam"
+	case f.Work:
+		return "Work"
+	}
+	return imapName
+}
+
 // TabLabels returns the UI label names in tab display order.
 // tab_order keys (e.g. "inbox", "to_screen") are resolved to label names
 // (e.g. "Inbox", "ToScreen") that activeFolder() and keyboard shortcuts match against.
@@ -130,15 +182,15 @@ type SignatureConfig struct {
 
 // UIConfig holds display preferences.
 type UIConfig struct {
-	Theme                 string           `toml:"theme"`                   // dark | light | auto
-	InboxCount            int              `toml:"inbox_count"`             // number of messages to fetch
-	Signature             string           `toml:"signature"`               // legacy: plain signature (markdown). Deprecated in favor of [ui.signature] block.
-	SignatureBlock        SignatureConfig  `toml:"signature_block"`         // new structured signature config
-	AutoScreenOnLoad      *bool            `toml:"auto_screen_on_load"`     // screen inbox on every load (default true)
-	BgSyncInterval        int              `toml:"bg_sync_interval"`        // background sync interval in minutes (0 = disabled, default 5)
-	BulkProgressThreshold int              `toml:"bulk_progress_threshold"` // show progress counter for batches larger than this (default 10)
-	DraftBackupCount      int              `toml:"draft_backup_count"`      // rolling compose backups in ~/.cache/neomd/drafts/ (default 20, -1 = disabled)
-	MarkAsReadAfterSecs   int              `toml:"mark_as_read_after_secs"` // seconds in reader before marking as read (0 = immediate, default 7)
+	Theme                 string          `toml:"theme"`                   // dark | light | auto
+	InboxCount            int             `toml:"inbox_count"`             // number of messages to fetch
+	Signature             string          `toml:"signature"`               // legacy: plain signature (markdown). Deprecated in favor of [ui.signature] block.
+	SignatureBlock        SignatureConfig `toml:"signature_block"`         // new structured signature config
+	AutoScreenOnLoad      *bool           `toml:"auto_screen_on_load"`     // screen inbox on every load (default true)
+	BgSyncInterval        int             `toml:"bg_sync_interval"`        // background sync interval in minutes (0 = disabled, default 5)
+	BulkProgressThreshold int             `toml:"bulk_progress_threshold"` // show progress counter for batches larger than this (default 10)
+	DraftBackupCount      int             `toml:"draft_backup_count"`      // rolling compose backups in ~/.cache/neomd/drafts/ (default 20, -1 = disabled)
+	MarkAsReadAfterSecs   int             `toml:"mark_as_read_after_secs"` // seconds in reader before marking as read (0 = immediate, default 7)
 }
 
 // TextSignature returns the text/markdown signature for editor and text/plain part.
@@ -179,6 +231,37 @@ func (u UIConfig) AutoScreen() bool {
 	return *u.AutoScreenOnLoad
 }
 
+// Resolved returns a copy with sensible fallbacks filled in for any field
+// the user enabled-but-left-blank. Safe to call when Enabled is false.
+func (n NotificationsConfig) Resolved() NotificationsConfig {
+	out := n
+	if out.Command == "" {
+		out.Command = "notify-send"
+	}
+	if out.Icon == "" {
+		out.Icon = "mail-message-new"
+	}
+	if out.ExpireMs <= 0 {
+		out.ExpireMs = 5000
+	}
+	if len(out.Folders) == 0 {
+		out.Folders = []string{"Inbox"}
+	}
+	return out
+}
+
+// FolderAllowed reports whether folder is in the configured Folders list
+// (case-insensitive, with sensible defaults applied).
+func (n NotificationsConfig) FolderAllowed(folder string) bool {
+	r := n.Resolved()
+	for _, f := range r.Folders {
+		if strings.EqualFold(f, folder) {
+			return true
+		}
+	}
+	return false
+}
+
 // Config is the root neomd configuration.
 type Config struct {
 	// Accounts is the list of email accounts (use [[accounts]] in config.toml).
@@ -196,9 +279,10 @@ type Config struct {
 	// These share the active account's SMTP connection — no IMAP or credentials needed.
 	Senders []SenderConfig `toml:"senders"`
 
-	Screener ScreenerConfig `toml:"screener"`
-	Folders  FoldersConfig  `toml:"folders"`
-	UI       UIConfig       `toml:"ui"`
+	Screener      ScreenerConfig      `toml:"screener"`
+	Folders       FoldersConfig       `toml:"folders"`
+	UI            UIConfig            `toml:"ui"`
+	Notifications NotificationsConfig `toml:"notifications"`
 
 	// AutoBCC, if set, is added to every outgoing email's Bcc field so the
 	// user keeps a copy in an external mailbox (e.g. their hey.com archive).
@@ -295,6 +379,17 @@ func SpyPixelCachePath() string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("neomd_%d_spy_pixels", os.Getuid()))
 }
 
+// NotifyStatePath returns the path for the per-folder last-seen-UID baseline
+// used by the notification system to decide which messages count as "new".
+func NotifyStatePath() string {
+	if dir, err := os.UserCacheDir(); err == nil {
+		p := filepath.Join(dir, cacheDirName)
+		_ = os.MkdirAll(p, 0700)
+		return filepath.Join(p, "notify_state.json")
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("neomd_%d_notify_state.json", os.Getuid()))
+}
+
 // welcomePath returns the path of the first-run marker file.
 func welcomePath() string {
 	if dir, err := os.UserCacheDir(); err == nil {
@@ -346,12 +441,14 @@ func Load(path string) (*Config, error) {
 	cfg.Screener.Feed = expandPath(cfg.Screener.Feed)
 	cfg.Screener.PaperTrail = expandPath(cfg.Screener.PaperTrail)
 	cfg.Screener.Spam = expandPath(cfg.Screener.Spam)
+	cfg.Screener.Notify = expandPath(cfg.Screener.Notify)
 
 	// Ensure screener list directories and files exist so appending (I/O/F/P/$)
 	// works on a fresh install without manual mkdir or touching files.
 	for _, p := range []string{
 		cfg.Screener.ScreenedIn, cfg.Screener.ScreenedOut,
 		cfg.Screener.Feed, cfg.Screener.PaperTrail, cfg.Screener.Spam,
+		cfg.Screener.Notify,
 	} {
 		if p != "" {
 			_ = os.MkdirAll(filepath.Dir(p), 0700)
@@ -464,6 +561,14 @@ func defaults() *Config {
 			Feed:        filepath.Join(listsDir, "feed.txt"),
 			PaperTrail:  filepath.Join(listsDir, "papertrail.txt"),
 			Spam:        filepath.Join(listsDir, "spam.txt"),
+			Notify:      filepath.Join(listsDir, "notify.txt"),
+		},
+		Notifications: NotificationsConfig{
+			Enabled:  false,
+			Command:  "notify-send",
+			Icon:     "mail-message-new",
+			ExpireMs: 5000,
+			Folders:  []string{"Inbox"},
 		},
 		Folders: FoldersConfig{
 			Inbox:       "INBOX",

@@ -1,0 +1,226 @@
+package notify
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/sspaeti/neomd/internal/config"
+	"github.com/sspaeti/neomd/internal/imap"
+	"github.com/sspaeti/neomd/internal/screener"
+)
+
+func newScreener(t *testing.T, notifyEntries []string) *screener.Screener {
+	t.Helper()
+	dir := t.TempDir()
+	notifyPath := filepath.Join(dir, "notify.txt")
+	if len(notifyEntries) > 0 {
+		body := ""
+		for _, e := range notifyEntries {
+			body += e + "\n"
+		}
+		if err := os.WriteFile(notifyPath, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sc, err := screener.New(screener.Config{
+		ScreenedIn:  filepath.Join(dir, "in.txt"),
+		ScreenedOut: filepath.Join(dir, "out.txt"),
+		Feed:        filepath.Join(dir, "feed.txt"),
+		PaperTrail:  filepath.Join(dir, "pt.txt"),
+		Spam:        filepath.Join(dir, "spam.txt"),
+		Notify:      notifyPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sc
+}
+
+func TestNotifier_DisabledIsNoop(t *testing.T) {
+	n := New(config.NotificationsConfig{Enabled: false})
+	if n.Enabled() {
+		t.Error("expected Enabled() = false")
+	}
+	if err := n.Send("title", "body"); err != nil {
+		t.Errorf("Send when disabled returned %v, want nil", err)
+	}
+}
+
+func TestNotifier_ResolvedDefaults(t *testing.T) {
+	n := New(config.NotificationsConfig{Enabled: true})
+	if n.cfg.Command != "notify-send" {
+		t.Errorf("Command default = %q, want notify-send", n.cfg.Command)
+	}
+	if n.cfg.Icon != "mail-message-new" {
+		t.Errorf("Icon default = %q", n.cfg.Icon)
+	}
+	if n.cfg.ExpireMs != 5000 {
+		t.Errorf("ExpireMs default = %d", n.cfg.ExpireMs)
+	}
+	if len(n.cfg.Folders) != 1 || n.cfg.Folders[0] != "Inbox" {
+		t.Errorf("Folders default = %v", n.cfg.Folders)
+	}
+}
+
+func TestMaybeNotify_FirstRunBaselineSilent(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	state := LoadState(statePath)
+	sc := newScreener(t, []string{"vip@example.com"})
+	// Use a fake command that always succeeds so we'd notice if it was invoked.
+	n := New(config.NotificationsConfig{Enabled: true, Command: "true", Folders: []string{"Inbox"}})
+	emails := []imap.Email{
+		{UID: 100, From: "vip@example.com", Subject: "hi"},
+		{UID: 101, From: "other@example.com", Subject: "hello"},
+	}
+	res := n.MaybeNotify("acct", "INBOX", "Inbox", emails, nil, sc, state)
+	if res.Sent != 0 {
+		t.Errorf("first run sent = %d, want 0 (baseline-only pass)", res.Sent)
+	}
+	uid, ok := state.Get(stateKey("acct", "INBOX"))
+	if !ok || uid != 101 {
+		t.Errorf("baseline = (%d, %v), want (101, true)", uid, ok)
+	}
+}
+
+func TestMaybeNotify_OnlyNewEmailsFromNotifyList(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	state := LoadState(statePath)
+	state.Set(stateKey("acct", "INBOX"), 100)
+
+	sc := newScreener(t, []string{"vip@example.com"})
+	n := New(config.NotificationsConfig{Enabled: true, Command: "true", Folders: []string{"Inbox"}})
+
+	emails := []imap.Email{
+		{UID: 100, From: "vip@example.com", Subject: "old"},     // not new
+		{UID: 101, From: "vip@example.com", Subject: "new!"},    // new + on notify list
+		{UID: 102, From: "other@example.com", Subject: "noise"}, // new but not on notify list
+	}
+	res := n.MaybeNotify("acct", "INBOX", "Inbox", emails, nil, sc, state)
+	if res.Sent != 1 {
+		t.Errorf("sent = %d, want 1", res.Sent)
+	}
+}
+
+func TestMaybeNotify_DomainEntry(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	state := LoadState(statePath)
+	state.Set(stateKey("acct", "INBOX"), 0)
+
+	sc := newScreener(t, []string{"@important.org"})
+	n := New(config.NotificationsConfig{Enabled: true, Command: "true", Folders: []string{"Inbox"}})
+
+	emails := []imap.Email{
+		{UID: 1, From: "alice@important.org", Subject: "x"},
+		{UID: 2, From: "bob@important.org", Subject: "y"},
+		{UID: 3, From: "spam@nowhere.com", Subject: "z"},
+	}
+	res := n.MaybeNotify("acct", "INBOX", "Inbox", emails, nil, sc, state)
+	if res.Sent != 2 {
+		t.Errorf("sent = %d, want 2 (both @important.org senders)", res.Sent)
+	}
+}
+
+func TestMaybeNotify_StateKeyUsesIMAPNotLabel(t *testing.T) {
+	// Regression: an earlier change normalised sourceFolder to a UI label
+	// before computing the state key, which silently invalidated every
+	// existing user's baseline (Personal|INBOX → Personal|Inbox) and gave
+	// them a free first-run baseline pass on upgrade.
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	state := LoadState(statePath)
+	state.Set("acct|INBOX", 100) // pre-existing user state, IMAP-name-keyed
+
+	sc := newScreener(t, []string{"vip@example.com"})
+	n := New(config.NotificationsConfig{Enabled: true, Command: "true", Folders: []string{"Inbox"}})
+
+	// Caller passes IMAP name "INBOX" + label "Inbox" — MaybeNotify must
+	// look up state under the IMAP name so the existing baseline applies.
+	emails := []imap.Email{
+		{UID: 99, From: "vip@example.com", Subject: "old"},  // ≤ baseline → skip
+		{UID: 105, From: "vip@example.com", Subject: "new"}, // > baseline → notify
+	}
+	res := n.MaybeNotify("acct", "INBOX", "Inbox", emails, nil, sc, state)
+	if !res.HadBaseline {
+		t.Fatal("HadBaseline should be true — pre-seeded baseline must be found via IMAP key")
+	}
+	if res.Baseline != 100 {
+		t.Errorf("Baseline = %d, want 100 (the pre-seeded value)", res.Baseline)
+	}
+	if res.Sent != 1 {
+		t.Errorf("Sent = %d, want 1 (the new VIP)", res.Sent)
+	}
+}
+
+func TestMaybeNotify_FolderAllowlistFiltersOut(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	state := LoadState(statePath)
+	state.Set(stateKey("acct", "INBOX"), 0)
+
+	sc := newScreener(t, []string{"vip@example.com"})
+	n := New(config.NotificationsConfig{Enabled: true, Command: "true", Folders: []string{"Inbox"}})
+
+	emails := []imap.Email{
+		{UID: 5, From: "vip@example.com", Subject: "moved-to-feed"},
+	}
+	// Email is auto-screened to Feed → allowlist excludes it.
+	dst := map[uint32]string{5: "Feed"}
+	res := n.MaybeNotify("acct", "INBOX", "Inbox", emails, dst, sc, state)
+	if res.Sent != 0 {
+		t.Errorf("sent = %d, want 0 (Feed not in allowlist)", res.Sent)
+	}
+}
+
+func TestState_PersistAndReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	state := LoadState(path)
+	state.Set("acct|Inbox", 42)
+	if err := state.Save(); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := LoadState(path)
+	uid, ok := reloaded.Get("acct|Inbox")
+	if !ok || uid != 42 {
+		t.Errorf("reloaded = (%d, %v), want (42, true)", uid, ok)
+	}
+}
+
+func TestSend_TimeoutCannotBlockTUI(t *testing.T) {
+	// Drop a tiny shell script that ignores all arguments and sleeps
+	// forever; Send must return within the configured timeout instead of
+	// blocking the bubbletea Update loop indefinitely.
+	dir := t.TempDir()
+	hung := filepath.Join(dir, "hung-notifier.sh")
+	if err := os.WriteFile(hung, []byte("#!/bin/sh\nsleep 60\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	n := New(config.NotificationsConfig{Enabled: true, Command: hung, Folders: []string{"Inbox"}})
+
+	start := time.Now()
+	err := n.Send("title", "body")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected timeout error from hung notifier, got nil")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("error should mention timeout, got: %v", err)
+	}
+	// 2s timeout + exec overhead — must finish well under 4s.
+	if elapsed > 4*time.Second {
+		t.Errorf("Send blocked for %s, exceeds the 2s timeout ceiling", elapsed)
+	}
+}
+
+func TestState_MissingFileReturnsEmpty(t *testing.T) {
+	state := LoadState(filepath.Join(t.TempDir(), "does-not-exist.json"))
+	if state == nil {
+		t.Fatal("LoadState should never return nil")
+	}
+	if state.UIDs == nil {
+		t.Error("UIDs map should be initialised")
+	}
+	if _, ok := state.Get("anything"); ok {
+		t.Error("expected no entries")
+	}
+}

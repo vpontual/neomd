@@ -127,6 +127,67 @@ func TestClassify(t *testing.T) {
 			from: "",
 			want: CategoryToScreen,
 		},
+		{
+			name: "@domain in screened_in matches any address at that domain",
+			screener: &Screener{
+				screenedIn:  map[string]bool{"@ssp.sh": true},
+				screenedOut: map[string]bool{},
+				feed:        map[string]bool{},
+				paperTrail:  map[string]bool{},
+				spam:        map[string]bool{},
+			},
+			from: "anyone@ssp.sh",
+			want: CategoryInbox,
+		},
+		{
+			name: "@domain in screened_out blocks any address at that domain",
+			screener: &Screener{
+				screenedIn:  map[string]bool{},
+				screenedOut: map[string]bool{"@spammy.io": true},
+				feed:        map[string]bool{},
+				paperTrail:  map[string]bool{},
+				spam:        map[string]bool{},
+			},
+			from: "Promo Bot <promo@spammy.io>",
+			want: CategoryScreenedOut,
+		},
+		{
+			name: "exact email beats @domain in different lists",
+			screener: &Screener{
+				// Exact john@ssp.sh is blocked, but @ssp.sh is approved overall.
+				screenedIn:  map[string]bool{"@ssp.sh": true},
+				screenedOut: map[string]bool{"john@ssp.sh": true},
+				feed:        map[string]bool{},
+				paperTrail:  map[string]bool{},
+				spam:        map[string]bool{},
+			},
+			from: "john@ssp.sh",
+			want: CategoryScreenedOut,
+		},
+		{
+			name: "domain rule does not match different domain",
+			screener: &Screener{
+				screenedIn:  map[string]bool{"@ssp.sh": true},
+				screenedOut: map[string]bool{},
+				feed:        map[string]bool{},
+				paperTrail:  map[string]bool{},
+				spam:        map[string]bool{},
+			},
+			from: "alice@example.com",
+			want: CategoryToScreen,
+		},
+		{
+			name: "@domain entry is case-insensitive on the domain part",
+			screener: &Screener{
+				screenedIn:  map[string]bool{"@example.com": true},
+				screenedOut: map[string]bool{},
+				feed:        map[string]bool{},
+				paperTrail:  map[string]bool{},
+				spam:        map[string]bool{},
+			},
+			from: "User@EXAMPLE.com",
+			want: CategoryInbox,
+		},
 	}
 
 	for _, tt := range tests {
@@ -184,6 +245,30 @@ func TestFileOperations(t *testing.T) {
 		}
 		if !s.IsEmpty() == true {
 			// 2 entries loaded
+		}
+	})
+
+	t.Run("New strips inline # comments after entries", func(t *testing.T) {
+		// The documented example showed `@ssp.sh # everyone at ssp.sh …` —
+		// loadList must strip the inline comment so the entry actually matches.
+		dir := t.TempDir()
+		cfg := makeCfg(dir)
+		content := "@ssp.sh # everyone at ssp.sh is approved\nalice@example.com    # personal contact\n#bob@example.com # full-line still works\n"
+		if err := os.WriteFile(cfg.ScreenedIn, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+		s, err := New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.Classify("anyone@ssp.sh") != CategoryInbox {
+			t.Error("@ssp.sh entry with inline comment should match anyone@ssp.sh")
+		}
+		if s.Classify("alice@example.com") != CategoryInbox {
+			t.Error("alice@example.com with trailing comment should match")
+		}
+		if s.Classify("bob@example.com") != CategoryToScreen {
+			t.Error("bob (full-line commented out) should NOT match")
 		}
 	})
 
@@ -374,6 +459,184 @@ func TestFileOperations(t *testing.T) {
 		}
 		if string(data) != "undo@example.com\n" {
 			t.Fatalf("screened_in contents = %q, want restored entry", data)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// TestShouldNotify — notify list is independent of categories
+// ---------------------------------------------------------------------------
+
+func TestShouldNotify(t *testing.T) {
+	t.Run("empty list returns false", func(t *testing.T) {
+		s := &Screener{notify: map[string]bool{}}
+		if s.ShouldNotify("anyone@example.com") {
+			t.Error("ShouldNotify should be false when notify is empty")
+		}
+	})
+
+	t.Run("exact email match", func(t *testing.T) {
+		s := &Screener{notify: map[string]bool{"vip@example.com": true}}
+		if !s.ShouldNotify("vip@example.com") {
+			t.Error("expected exact match")
+		}
+		if s.ShouldNotify("other@example.com") {
+			t.Error("non-listed address should not notify")
+		}
+	})
+
+	t.Run("@domain match notifies any address at that domain", func(t *testing.T) {
+		s := &Screener{notify: map[string]bool{"@ssp.sh": true}}
+		if !s.ShouldNotify("anyone@ssp.sh") {
+			t.Error("expected domain match")
+		}
+		if s.ShouldNotify("anyone@other.tld") {
+			t.Error("different domain should not notify")
+		}
+	})
+
+	t.Run("normalises display name and case", func(t *testing.T) {
+		s := &Screener{notify: map[string]bool{"vip@example.com": true}}
+		if !s.ShouldNotify("VIP <VIP@Example.com>") {
+			t.Error("expected normalised match")
+		}
+	})
+
+	t.Run("loads from notify.txt via New", func(t *testing.T) {
+		dir := t.TempDir()
+		notifyPath := filepath.Join(dir, "notify.txt")
+		os.WriteFile(notifyPath, []byte("@important.org\nboss@work.com\n"), 0600)
+		s, err := New(Config{
+			ScreenedIn:  filepath.Join(dir, "in.txt"),
+			ScreenedOut: filepath.Join(dir, "out.txt"),
+			Feed:        filepath.Join(dir, "feed.txt"),
+			PaperTrail:  filepath.Join(dir, "pt.txt"),
+			Spam:        filepath.Join(dir, "spam.txt"),
+			Notify:      notifyPath,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !s.ShouldNotify("alice@important.org") {
+			t.Error("@important.org domain entry should match")
+		}
+		if !s.ShouldNotify("boss@work.com") {
+			t.Error("boss@work.com exact entry should match")
+		}
+		if s.ShouldNotify("nobody@nowhere.com") {
+			t.Error("unrelated address should not notify")
+		}
+	})
+
+	t.Run("AddNotify appends and persists, RemoveNotify clears", func(t *testing.T) {
+		dir := t.TempDir()
+		notifyPath := filepath.Join(dir, "notify.txt")
+		s, err := New(Config{
+			ScreenedIn:  filepath.Join(dir, "in.txt"),
+			ScreenedOut: filepath.Join(dir, "out.txt"),
+			Feed:        filepath.Join(dir, "feed.txt"),
+			PaperTrail:  filepath.Join(dir, "pt.txt"),
+			Spam:        filepath.Join(dir, "spam.txt"),
+			Notify:      notifyPath,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.AddNotify("alice@example.com"); err != nil {
+			t.Fatalf("AddNotify exact: %v", err)
+		}
+		if err := s.AddNotify("@important.org"); err != nil {
+			t.Fatalf("AddNotify domain: %v", err)
+		}
+		// Re-add is no-op (no duplicate).
+		if err := s.AddNotify("alice@example.com"); err != nil {
+			t.Fatalf("AddNotify duplicate: %v", err)
+		}
+		if !s.ShouldNotify("alice@example.com") {
+			t.Error("alice should notify")
+		}
+		if !s.ShouldNotify("anyone@important.org") {
+			t.Error("@important.org should match anyone@important.org")
+		}
+		// Reload from disk to confirm persistence.
+		s2, err := New(s.cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !s2.ShouldNotify("alice@example.com") || !s2.ShouldNotify("bob@important.org") {
+			t.Error("reload lost entries")
+		}
+		// Remove.
+		if err := s.RemoveNotify("alice@example.com"); err != nil {
+			t.Fatal(err)
+		}
+		if s.ShouldNotify("alice@example.com") {
+			t.Error("removed entry should not match")
+		}
+	})
+
+	t.Run("AddNotify errors when path not configured", func(t *testing.T) {
+		s := &Screener{notify: map[string]bool{}, cfg: Config{}}
+		if err := s.AddNotify("x@example.com"); err == nil {
+			t.Error("expected error when notify path empty")
+		}
+	})
+
+	t.Run("ShouldNotify is false when Notify path is omitted from Config (regression)", func(t *testing.T) {
+		// Regression: cmd/neomd/main.go used to construct screener.Config without
+		// the Notify field, so the in-memory notify set stayed empty even when
+		// notify.txt had entries. Result: ShouldNotify returned false silently.
+		dir := t.TempDir()
+		notifyPath := filepath.Join(dir, "notify.txt")
+		os.WriteFile(notifyPath, []byte("vip@example.com\n"), 0600)
+		// Build a screener WITHOUT passing Notify — mimics the broken main.go
+		// before the fix.
+		s, err := New(Config{
+			ScreenedIn:  filepath.Join(dir, "in.txt"),
+			ScreenedOut: filepath.Join(dir, "out.txt"),
+			Feed:        filepath.Join(dir, "feed.txt"),
+			PaperTrail:  filepath.Join(dir, "pt.txt"),
+			Spam:        filepath.Join(dir, "spam.txt"),
+			// Notify intentionally unset
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.ShouldNotify("vip@example.com") {
+			t.Fatal("ShouldNotify should be false when Notify path is omitted")
+		}
+		// Now pass Notify — ShouldNotify must return true.
+		s2, err := New(Config{
+			ScreenedIn:  filepath.Join(dir, "in.txt"),
+			ScreenedOut: filepath.Join(dir, "out.txt"),
+			Feed:        filepath.Join(dir, "feed.txt"),
+			PaperTrail:  filepath.Join(dir, "pt.txt"),
+			Spam:        filepath.Join(dir, "spam.txt"),
+			Notify:      notifyPath,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !s2.ShouldNotify("vip@example.com") {
+			t.Fatal("ShouldNotify should return true when Notify path is wired up")
+		}
+	})
+
+	t.Run("Notify path empty leaves the list empty", func(t *testing.T) {
+		dir := t.TempDir()
+		s, err := New(Config{
+			ScreenedIn:  filepath.Join(dir, "in.txt"),
+			ScreenedOut: filepath.Join(dir, "out.txt"),
+			Feed:        filepath.Join(dir, "feed.txt"),
+			PaperTrail:  filepath.Join(dir, "pt.txt"),
+			Spam:        filepath.Join(dir, "spam.txt"),
+			// Notify intentionally unset
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.ShouldNotify("anyone@anywhere.com") {
+			t.Error("ShouldNotify should be false when no notify list configured")
 		}
 	})
 }

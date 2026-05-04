@@ -13,7 +13,24 @@ The screener classifies senders into four buckets using plain-text allowlists. U
 | `screened_out.txt`  | Blocked                  | ScreenedOut       |
 | `feed.txt`          | Newsletter / feed        | Feed              |
 | `papertrail.txt`    | Receipts / notifications | PaperTrail        |
+| `notify.txt`        | Desktop notification     | (no move; only fires `notify-send` — see [Notifications](../notifications/)) |
 | _(not in any list)_ | Unknown                  | ToScreen          |
+
+### Domain entries
+
+Any list line beginning with `@` (e.g. `@ssp.sh`) matches **every** address at that domain. Plain email addresses keep their exact-match behaviour and **always win over a domain rule** when both are present, so per-address overrides remain possible:
+
+```
+# screened_in.txt
+@ssp.sh                 # everyone at ssp.sh is approved …
+```
+
+```
+# screened_out.txt
+spammy@ssp.sh           # … except this one address, which is blocked
+```
+
+Domain entries work in every screener list (`screened_in`, `screened_out`, `feed`, `papertrail`, `spam`, `notify`). The `Di` / `Do` chord (see below) writes them for you from inside neomd.
 
 ## Auto-screen and background sync
 
@@ -37,6 +54,17 @@ bg_sync_interval    = 5      # minutes between background syncs; 0 = disabled
 Press `S` (or run `:screen`) to dry-run the screener against the emails currently loaded in your Inbox. A preview shows what would move where — press `y` to apply, `n` to cancel.
 
 For individual senders, use `I` / `O` / `F` / `P` from any folder or the ToScreen queue.
+
+### Whole-domain shortcuts: `Di` / `Do`
+
+When you want to approve or block **every** future address at a domain in one go, press the `D` chord:
+
+| Keys | Effect                                                               |
+| ---- | -------------------------------------------------------------------- |
+| `Di` | Append `@<domain>` to `screened_in.txt`  (asks `y/n` first)          |
+| `Do` | Append `@<domain>` to `screened_out.txt` (asks `y/n` first)          |
+
+The chord works on the highlighted email in the inbox **and** on the open email in the reader. The domain is taken from the email's `From` header. Existing per-address entries (in any list) still take precedence over the domain rule, so a single blocked address inside an otherwise-approved domain stays blocked.
 
 ## Bulk re-classification after updating your lists
 

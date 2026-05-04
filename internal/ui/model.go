@@ -25,6 +25,7 @@ import (
 	"github.com/sspaeti/neomd/internal/editor"
 	"github.com/sspaeti/neomd/internal/imap"
 	"github.com/sspaeti/neomd/internal/listmonk"
+	"github.com/sspaeti/neomd/internal/notify"
 	"github.com/sspaeti/neomd/internal/render"
 	"github.com/sspaeti/neomd/internal/screener"
 	"github.com/sspaeti/neomd/internal/smtp"
@@ -34,13 +35,13 @@ import (
 type viewState int
 
 const (
-	stateInbox   viewState = iota
-	stateReading           // reading a single email
-	stateCompose           // composing a new email
-	statePresend           // pre-send review: add attachments, then send or edit again
-	stateHelp              // help overlay
-	stateWelcome           // first-run welcome popup
-	stateReaction          // emoji reaction picker
+	stateInbox    viewState = iota
+	stateReading            // reading a single email
+	stateCompose            // composing a new email
+	statePresend            // pre-send review: add attachments, then send or edit again
+	stateHelp               // help overlay
+	stateWelcome            // first-run welcome popup
+	stateReaction           // emoji reaction picker
 )
 
 // async message types
@@ -128,6 +129,14 @@ type (
 	bgSyncTickMsg     struct{}
 	bgInboxFetchedMsg struct{ emails []imap.Email }
 	bgScreenDoneMsg   struct{ moved, total int }
+
+	// bgVipFolderFetchedMsg carries a non-Inbox folder fetch used purely to
+	// dispatch desktop notifications for VIP senders whose mail the daemon
+	// (or any other sync path) may have already moved out of Inbox.
+	bgVipFolderFetchedMsg struct {
+		folder string
+		emails []imap.Email
+	}
 	// mark-as-read timer (fires after N seconds in reader)
 	markAsReadTimerMsg struct {
 		uid    uint32
@@ -339,6 +348,11 @@ func (m Model) writeDebugReport() tea.Cmd {
 			if i < len(m.accounts) {
 				name = m.accounts[i].Name
 			}
+			if cli == nil {
+				// imap_disabled accounts have a nil client by design (send-only).
+				b.WriteString(fmt.Sprintf("- **%s** — IMAP disabled (send-only)\n", name))
+				continue
+			}
 			b.WriteString(fmt.Sprintf("- **%s** → `%s`\n", name, cli.Addr()))
 			if err := cli.Ping(nil); err != nil {
 				b.WriteString(fmt.Sprintf("  - PING: FAILED — `%s`\n", err))
@@ -376,6 +390,7 @@ func (m Model) writeDebugReport() tea.Cmd {
 		lists := [][2]string{
 			{"screened_in", sc.ScreenedIn}, {"screened_out", sc.ScreenedOut},
 			{"feed", sc.Feed}, {"papertrail", sc.PaperTrail}, {"spam", sc.Spam},
+			{"notify", sc.Notify},
 		}
 		for _, kv := range lists {
 			path := kv[1]
@@ -390,6 +405,22 @@ func (m Model) writeDebugReport() tea.Cmd {
 				b.WriteString(fmt.Sprintf("- %s: `%s` (%d bytes)\n", kv[0], path, info.Size()))
 			}
 		}
+
+		// Notifications
+		b.WriteString("\n## Notifications\n\n")
+		nc := m.cfg.Notifications.Resolved()
+		b.WriteString(fmt.Sprintf("- enabled: %v\n", nc.Enabled))
+		b.WriteString(fmt.Sprintf("- command: `%s`\n", nc.Command))
+		b.WriteString(fmt.Sprintf("- icon: `%s`\n", nc.Icon))
+		b.WriteString(fmt.Sprintf("- expire_ms: %d\n", nc.ExpireMs))
+		b.WriteString(fmt.Sprintf("- folders (allowlist): %s\n", strings.Join(nc.Folders, ", ")))
+		statePath := config.NotifyStatePath()
+		if data, err := os.ReadFile(statePath); err == nil {
+			b.WriteString(fmt.Sprintf("- state file: `%s` → `%s`\n", statePath, strings.TrimSpace(string(data))))
+		} else {
+			b.WriteString(fmt.Sprintf("- state file: `%s` (not yet written)\n", statePath))
+		}
+		b.WriteString(fmt.Sprintf("- bg-poll folders (non-Inbox): %s\n", strings.Join(m.vipNotifyFolders(), ", ")))
 
 		// UI config
 		b.WriteString("\n## UI Config\n\n")
@@ -455,13 +486,22 @@ type autoScreenMove struct {
 	dst   string
 }
 
+// pendingDomainAction queues a domain-level screener mutation awaiting y/n.
+// entry is the storage form ("@ssp.sh"); action is "I" (approve) or "O" (block).
+type pendingDomainAction struct {
+	entry  string
+	action string
+}
+
 // Model is the root bubbletea model.
 type Model struct {
-	cfg      *config.Config
-	accounts []config.AccountConfig // all configured accounts
-	clients  []*imap.Client         // one IMAP client per account
-	accountI int                    // index of the active account
-	screener *screener.Screener
+	cfg         *config.Config
+	accounts    []config.AccountConfig // all configured accounts
+	clients     []*imap.Client         // one IMAP client per account
+	accountI    int                    // index of the active account
+	screener    *screener.Screener
+	notifier    *notify.Notifier
+	notifyState *notify.State
 
 	state   viewState
 	width   int
@@ -487,10 +527,10 @@ type Model struct {
 	openBody        string            // markdown body used by the TUI reader
 	openHTMLBody    string            // original HTML part; used by openInExternalViewer when available
 	openWebURL      string            // canonical "view online" URL for ctrl+o (may be empty)
-	openAttachments []imap.Attachment  // attachments of the currently open email
-	openLinks       []emailLink        // extracted links from the email body
-	openSpyPixels   imap.SpyPixelInfo  // spy pixels detected in the currently open email
-	readerPending   string             // chord prefix in reader (space for link open)
+	openAttachments []imap.Attachment // attachments of the currently open email
+	openLinks       []emailLink       // extracted links from the email body
+	openSpyPixels   imap.SpyPixelInfo // spy pixels detected in the currently open email
+	readerPending   string            // chord prefix in reader (space for link open)
 	// Mark-as-read timer tracking
 	markAsReadUID    uint32 // UID of email with pending mark-as-read timer
 	markAsReadFolder string // folder of email with pending mark-as-read timer
@@ -574,6 +614,12 @@ type Model struct {
 	// being bulk-moved back to Inbox.
 	pendingResetUIDs []uint32
 
+	// pendingDomainOp holds an "@domain" screener entry (e.g. "@ssp.sh")
+	// awaiting y/n confirmation, plus the action to execute ("I" approve,
+	// "O" block). Set by the Di / Do reader chord; cleared on y, n, or any
+	// other key.
+	pendingDomainOp *pendingDomainAction
+
 	// pendingDeleteAll holds UIDs + folder awaiting y/n before permanent deletion.
 	pendingDeleteAll *deleteAllReadyMsg
 
@@ -611,15 +657,17 @@ func New(cfg *config.Config, clients []*imap.Client, sc *screener.Screener, mail
 
 	spyKeys, scannedKeys := loadSpyPixelCache()
 	return Model{
-		cfg:        cfg,
-		accounts:   cfg.ActiveAccounts(),
-		clients:    clients,
-		screener:   sc,
-		state:      stateInbox,
-		loading:    true,
-		folders:    cfg.Folders.TabLabels(),
-		cmdHistory: loadCmdHistory(config.HistoryPath()),
-		cmdHistI:   -1,
+		cfg:         cfg,
+		accounts:    cfg.ActiveAccounts(),
+		clients:     clients,
+		screener:    sc,
+		notifier:    notify.New(cfg.Notifications),
+		notifyState: notify.LoadState(config.NotifyStatePath()),
+		state:       stateInbox,
+		loading:     true,
+		folders:     cfg.Folders.TabLabels(),
+		cmdHistory:  loadCmdHistory(config.HistoryPath()),
+		cmdHistI:    -1,
 		// Note: Spam is intentionally excluded from tabs — use :go-spam to visit.
 		compose:        compose,
 		spinner:        sp,
@@ -1359,6 +1407,81 @@ func (m Model) classifyForScreen(emails []imap.Email) []autoScreenMove {
 	return moves
 }
 
+// execDomainScreen applies a confirmed domain-level screener mutation
+// (Approve or Block on a "@domain" entry). Reloads the active folder so the
+// view reflects any senders that have just been reclassified.
+func (m Model) execDomainScreen(op *pendingDomainAction) (tea.Model, tea.Cmd) {
+	var err error
+	switch op.action {
+	case "I":
+		err = m.screener.Approve(op.entry)
+	case "O":
+		err = m.screener.Block(op.entry)
+	default:
+		m.status = "internal error: unknown domain action"
+		m.isError = true
+		return m, nil
+	}
+	if err != nil {
+		m.status = fmt.Sprintf("Domain screen failed: %v", err)
+		m.isError = true
+		return m, nil
+	}
+	verb := "approved"
+	if op.action == "O" {
+		verb = "blocked"
+	}
+	m.status = fmt.Sprintf("Domain %s %s.", op.entry, verb)
+	m.loading = true
+	return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.activeFolder()))
+}
+
+// maybeNotifyInbox dispatches desktop notifications for the freshly fetched
+// emails. moves describes where each email is heading after auto-screening
+// (pass nil if no auto-screen pass ran). folder is the IMAP source-folder
+// name the fetch came from. No-op when the notifier is disabled.
+//
+// All folder values are converted to UI labels ("Inbox", "PaperTrail", …)
+// before the notifier sees them so [notifications].folders works regardless
+// of whether the user kept default IMAP names or set custom ones (e.g.
+// folders.papertrail = "HEY/Paper Trail").
+//
+// Reports activity on the TUI status bar so the user can confirm the pipeline
+// is wired up — notifications themselves are easy to miss.
+func (m *Model) maybeNotifyInbox(folder string, emails []imap.Email, moves []autoScreenMove) {
+	if !m.notifier.Enabled() || len(emails) == 0 {
+		return
+	}
+	folderLabel := m.cfg.Folders.LabelFor(folder)
+	dstByUID := make(map[uint32]string, len(moves))
+	for _, mv := range moves {
+		if mv.email != nil {
+			dstByUID[mv.email.UID] = m.cfg.Folders.LabelFor(mv.dst)
+		}
+	}
+	// State key uses the IMAP folder name (stable across upgrades — the
+	// label may change as we rename folders or add aliases). The label is
+	// only used for the allowlist comparison.
+	res := m.notifier.MaybeNotify(m.activeAccount().Name, folder, folderLabel, emails, dstByUID, m.screener, m.notifyState)
+	switch {
+	case res.Failed > 0:
+		m.status = fmt.Sprintf("Notification command failed (%d): %s", res.Failed, res.Err)
+		m.isError = true
+	case res.Sent > 0:
+		m.status = fmt.Sprintf("Notified %d VIP sender(s) in %s.", res.Sent, folderLabel)
+	case !res.HadBaseline:
+		m.status = fmt.Sprintf("Notify baseline set for %s (UID %d). New mail from now on will notify.", folderLabel, res.MaxUIDObserved)
+	case res.NewSinceBase == 0:
+		// No new emails — silent (avoid noisy status on every refresh).
+	case res.MatchedNotify == 0:
+		m.status = fmt.Sprintf("Notify check %s: %d new email(s), 0 from VIPs (baseline UID %d → %d).",
+			folderLabel, res.NewSinceBase, res.Baseline, res.MaxUIDObserved)
+	case res.FolderAllowed == 0:
+		m.status = fmt.Sprintf("Notify check %s: %d VIP email(s), but destination not in allowlist (folders=%v).",
+			folderLabel, res.MatchedNotify, m.cfg.Notifications.Resolved().Folders)
+	}
+}
+
 // previewAutoScreen classifies the currently loaded inbox emails (no IMAP).
 func (m Model) previewAutoScreen() []autoScreenMove {
 	return m.classifyForScreen(m.emails)
@@ -1581,6 +1704,81 @@ func (m Model) bgFetchInboxCmd() tea.Cmd {
 	}
 }
 
+// bgFetchVipFolderCmd silently fetches headers from one configured
+// notification folder (other than Inbox, which is handled by the regular bg
+// sync). The result feeds straight into the notifier — no auto-screening,
+// no UI mutation beyond a brief status update.
+func (m Model) bgFetchVipFolderCmd(folder string) tea.Cmd {
+	return func() tea.Msg {
+		cli := m.imapCli()
+		if cli == nil {
+			return bgVipFolderFetchedMsg{folder: folder, emails: nil}
+		}
+		cli.ResetMailboxSelection()
+		emails, err := cli.FetchHeaders(nil, folder, m.cfg.UI.InboxCount)
+		if err != nil {
+			return bgVipFolderFetchedMsg{folder: folder, emails: nil}
+		}
+		return bgVipFolderFetchedMsg{folder: folder, emails: emails}
+	}
+}
+
+// vipNotifyFolders returns the configured non-Inbox folder labels (mapped to
+// IMAP folder names) that should be polled for VIP notifications by the
+// background sync. Empty when the notifier is disabled or only "Inbox" is set.
+func (m Model) vipNotifyFolders() []string {
+	if !m.notifier.Enabled() {
+		return nil
+	}
+	cfg := m.cfg.Notifications.Resolved()
+	var out []string
+	for _, label := range cfg.Folders {
+		if strings.EqualFold(label, "Inbox") {
+			continue // Inbox is already covered by bgFetchInboxCmd
+		}
+		if dst := folderLabelToIMAP(label, m.cfg.Folders); dst != "" {
+			out = append(out, dst)
+		}
+	}
+	return out
+}
+
+// folderLabelToIMAP maps a UI folder label (e.g. "PaperTrail") to its
+// configured IMAP folder name. Returns "" for unknown labels.
+func folderLabelToIMAP(label string, fc config.FoldersConfig) string {
+	switch strings.ToLower(label) {
+	case "inbox":
+		return fc.Inbox
+	case "sent":
+		return fc.Sent
+	case "trash":
+		return fc.Trash
+	case "drafts":
+		return fc.Drafts
+	case "toscreen":
+		return fc.ToScreen
+	case "feed":
+		return fc.Feed
+	case "papertrail":
+		return fc.PaperTrail
+	case "screenedout":
+		return fc.ScreenedOut
+	case "archive":
+		return fc.Archive
+	case "waiting":
+		return fc.Waiting
+	case "scheduled":
+		return fc.Scheduled
+	case "someday":
+		return fc.Someday
+	case "spam":
+		return fc.Spam
+	case "work":
+		return fc.Work
+	}
+	return ""
+}
+
 // bgExecAutoScreenCmd silently moves emails and returns bgScreenDoneMsg.
 func (m Model) bgExecAutoScreenCmd(moves []autoScreenMove) tea.Cmd {
 	src := m.cfg.Folders.Inbox
@@ -1757,10 +1955,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(sortCmd, m.fetchFolderCountsCmd())
 			}
 			if moves := m.previewAutoScreen(); len(moves) > 0 {
+				m.maybeNotifyInbox(msg.folder, msg.emails, moves)
 				m.loading = true
 				m.bulkProgress = m.newBulkOp("Screening", len(moves))
 				return m, tea.Batch(sortCmd, m.fetchFolderCountsCmd(), m.spinner.Tick, m.execAutoScreenCmd(moves))
 			}
+		}
+		// Notify on any folder load that matches the user's allowlist — not
+		// just Inbox. Covers the case where a headless daemon has already
+		// screened a VIP email out of Inbox into PaperTrail/Feed before the
+		// TUI sees it; the notification still fires when the user (or the
+		// next refresh) loads that destination folder.
+		//
+		// Convert the IMAP folder name to its UI label first so allowlists
+		// written with labels (e.g. "PaperTrail") still match when the IMAP
+		// folder name is custom (e.g. "HEY/Paper Trail").
+		if m.cfg.Notifications.FolderAllowed(m.cfg.Folders.LabelFor(msg.folder)) {
+			m.maybeNotifyInbox(msg.folder, msg.emails, nil)
 		}
 		return m, tea.Batch(sortCmd, m.fetchFolderCountsCmd())
 
@@ -2176,8 +2387,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.scheduleBgSync() // just reschedule the next tick
 		}
 		// Fire background inbox fetch; reschedule next tick in parallel.
+		// Also poll any extra notification folders (e.g. PaperTrail, Feed)
+		// so VIP mail screened out of Inbox by the daemon still notifies.
 		m.bgSyncInProgress = true
-		return m, tea.Batch(m.bgFetchInboxCmd(), m.scheduleBgSync())
+		cmds := []tea.Cmd{m.bgFetchInboxCmd(), m.scheduleBgSync()}
+		for _, f := range m.vipNotifyFolders() {
+			cmds = append(cmds, m.bgFetchVipFolderCmd(f))
+		}
+		return m, tea.Batch(cmds...)
 
 	case bgInboxFetchedMsg:
 		// Keep bgSyncInProgress set until the entire fetch-and-screen cycle completes.
@@ -2194,6 +2411,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		moves := m.classifyForScreen(msg.emails)
+		m.maybeNotifyInbox(m.cfg.Folders.Inbox, msg.emails, moves)
 		if len(moves) == 0 {
 			// No moves needed - background sync is complete
 			m.bgSyncInProgress = false
@@ -2201,6 +2419,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// bgSyncInProgress stays set - will be cleared in bgScreenDoneMsg
 		return m, m.bgExecAutoScreenCmd(moves)
+
+	case bgVipFolderFetchedMsg:
+		if msg.emails == nil {
+			return m, nil // transient error; next tick retries
+		}
+		m.maybeNotifyInbox(msg.folder, msg.emails, nil)
+		return m, nil
 
 	case bgScreenDoneMsg:
 		// Background sync cycle complete - clear the guard flag
@@ -2445,6 +2670,7 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.pendingMoves = nil
 		m.pendingResetUIDs = nil
 		m.pendingDeleteAll = nil
+		m.pendingDomainOp = nil
 	}
 	m.status = ""
 	m.isError = false
@@ -2492,6 +2718,11 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "M":
 		m.pendingKey = "M"
 		m.status = "move to:  Mi inbox  Ma archive  Mf feed  Mp papertrail  Mt trash  Mo screened-out  Mw waiting  Mc scheduled  Mm someday"
+		return m, nil
+
+	case "D":
+		m.pendingKey = "D"
+		m.status = "domain screen:  Di in (@domain → screened_in)  Do out (@domain → screened_out)  (esc to cancel)"
 		return m, nil
 
 	case ",":
@@ -2610,6 +2841,11 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "y":
+		if m.pendingDomainOp != nil {
+			op := m.pendingDomainOp
+			m.pendingDomainOp = nil
+			return m.execDomainScreen(op)
+		}
 		if m.pendingDeleteAll != nil {
 			p := m.pendingDeleteAll
 			m.pendingDeleteAll = nil
@@ -2633,6 +2869,11 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.spinner.Tick, m.execAutoScreenCmd(moves))
 
 	case "n":
+		if m.pendingDomainOp != nil {
+			m.pendingDomainOp = nil
+			m.status = "Cancelled."
+			return m, nil
+		}
 		if m.pendingDeleteAll != nil || len(m.pendingResetUIDs) > 0 || len(m.pendingMoves) > 0 {
 			m.pendingDeleteAll = nil
 			m.pendingResetUIDs = nil
@@ -3148,6 +3389,32 @@ func (m Model) handleChord(prefix, key string) (tea.Model, tea.Cmd) {
 		}
 		m.status = fmt.Sprintf("unknown: M%s", key)
 
+	case "D":
+		if key != "i" && key != "o" {
+			m.status = fmt.Sprintf("unknown: D%s  (use Di or Do)", key)
+			return m, nil
+		}
+		e := selectedEmail(m.inbox)
+		if e == nil {
+			m.status = "No email selected for domain action."
+			m.isError = true
+			return m, nil
+		}
+		entry := domainEntry(e.From)
+		if entry == "" {
+			m.status = "Selected email has no parseable domain."
+			m.isError = true
+			return m, nil
+		}
+		action := strings.ToUpper(key)
+		m.pendingDomainOp = &pendingDomainAction{entry: entry, action: action}
+		verb := "IN"
+		if action == "O" {
+			verb = "OUT"
+		}
+		m.status = fmt.Sprintf("Screen %s domain %s? (y/n) — affects every future sender at this domain", verb, entry)
+		return m, nil
+
 	case ",":
 		type sortSpec struct {
 			field string
@@ -3217,6 +3484,29 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.isError = false
 				return m, m.downloadEMLCmd()
 			}
+			// space + n / N = add open email's sender (or @domain) to notify.txt
+			if key == "n" || key == "N" {
+				if m.openEmail == nil {
+					return m, nil
+				}
+				entry := strings.ToLower(extractEmailAddr(m.openEmail.From))
+				if key == "N" {
+					entry = domainEntry(m.openEmail.From)
+				}
+				if entry == "" {
+					m.status = "Could not parse sender address."
+					m.isError = true
+					return m, nil
+				}
+				if err := m.screener.AddNotify(entry); err != nil {
+					m.status = "Add to notify.txt failed: " + err.Error()
+					m.isError = true
+					return m, nil
+				}
+				m.status = fmt.Sprintf("Added %s to notify.txt — desktop notifications will fire for new mail from this %s.",
+					entry, map[bool]string{true: "domain", false: "sender"}[key == "N"])
+				return m, nil
+			}
 			// Not a digit or 'l' — fall through
 		case "l": // l + first digit (waiting for second digit)
 			if len(key) == 1 && key >= "0" && key <= "9" {
@@ -3230,6 +3520,29 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.reader.GotoTop()
 				return m, nil
 			}
+		case "D": // Di / Do = domain-level screen IN / OUT for the open email
+			if key != "i" && key != "o" {
+				m.status = fmt.Sprintf("unknown: D%s  (use Di or Do)", key)
+				m.isError = true
+				return m, nil
+			}
+			if m.openEmail == nil {
+				return m, nil
+			}
+			entry := domainEntry(m.openEmail.From)
+			if entry == "" {
+				m.status = "Open email has no parseable domain."
+				m.isError = true
+				return m, nil
+			}
+			action := strings.ToUpper(key)
+			m.pendingDomainOp = &pendingDomainAction{entry: entry, action: action}
+			verb := "IN"
+			if action == "O" {
+				verb = "OUT"
+			}
+			m.status = fmt.Sprintf("Screen %s domain %s? (y/n) — affects every future sender at this domain", verb, entry)
+			return m, nil
 		default:
 			// Handle "l[0-9]" pattern (first digit entered, waiting for second)
 			if len(pending) == 2 && pending[0] == 'l' && pending[1] >= '0' && pending[1] <= '9' {
@@ -3245,6 +3558,24 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 			}
+		}
+	}
+
+	// Pending domain-screen confirmation (set by Di / Do chord) — only y/n accepted.
+	if m.pendingDomainOp != nil {
+		switch key {
+		case "y":
+			op := m.pendingDomainOp
+			m.pendingDomainOp = nil
+			return m.execDomainScreen(op)
+		case "n", "esc":
+			m.pendingDomainOp = nil
+			m.status = "Cancelled."
+			return m, nil
+		default:
+			// Any other key cancels the confirmation but does not consume the key.
+			m.pendingDomainOp = nil
+			m.status = ""
 		}
 	}
 
@@ -3312,7 +3643,7 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else if len(m.openLinks) > 0 {
 			hints = append(hints, "1-0 links")
 		}
-		hints = append(hints, "d download .eml")
+		hints = append(hints, "d download .eml", "n add sender to notify.txt", "N add @domain to notify.txt")
 		m.status = "space: " + strings.Join(hints, "  ·  ")
 		return m, nil
 	case "g":
@@ -3320,6 +3651,10 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "G":
 		m.reader.GotoBottom()
+		return m, nil
+	case "D":
+		m.readerPending = "D"
+		m.status = "domain screen:  Di in (@domain → screened_in)  Do out (@domain → screened_out)  (esc to cancel)"
 		return m, nil
 	}
 	var cmd tea.Cmd
@@ -4496,6 +4831,16 @@ func extractEmailAddr(s string) string {
 		}
 	}
 	return strings.TrimSpace(s)
+}
+
+// domainEntry returns the lowercased "@domain.tld" form of from for use as a
+// screener list entry, or an empty string if the address has no '@' part.
+func domainEntry(from string) string {
+	addr := strings.ToLower(extractEmailAddr(from))
+	if i := strings.IndexByte(addr, '@'); i >= 0 {
+		return addr[i:]
+	}
+	return ""
 }
 
 // extractName extracts the name part from "Name <email@example.com>" format.
