@@ -564,3 +564,50 @@ account = "Personal"
 		t.Error("UseKeyring() should be false after successful resolution")
 	}
 }
+
+func TestLoad_AIConfigDefaultUsesInteractiveClaude(t *testing.T) {
+	// Regression for two prior bugs:
+	//   1. Defaults must NOT include `-p` (claude's print mode bills against
+	//      API credits even with a Pro/Max subscription — triggered "Credit
+	//      balance is too low" in real use).
+	//   2. The arg string must mention {file} so claude knows which file to
+	//      edit. Without it the spawn was `claude "fix grammar" /path/file`
+	//      — claude treated the path positional as ignored text and started
+	//      running `git status` in its cwd instead of editing the draft.
+	//
+	// Default `args = ["edit {file}: {prompt}"]` paired with cmd.Dir set to
+	// the temp dir lets claude reach the file via its built-in Edit tool.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	cfgBody := `
+[[accounts]]
+name     = "Personal"
+imap     = "imap.example.com:993"
+smtp     = "smtp.example.com:587"
+user     = "me@example.com"
+password = "x"
+from     = "Me <me@example.com>"
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.AI.Args) != 1 {
+		t.Fatalf("AI.Args = %v, want exactly one arg", cfg.AI.Args)
+	}
+	got := cfg.AI.Args[0]
+	if !strings.Contains(got, "{file}") {
+		t.Errorf("AI.Args = %q — must contain {file} placeholder so claude can locate the draft", got)
+	}
+	if !strings.Contains(got, "{prompt}") {
+		t.Errorf("AI.Args = %q — must contain {prompt} placeholder so the typed instruction is forwarded", got)
+	}
+	for _, a := range cfg.AI.Args {
+		if a == "-p" || a == "--print" {
+			t.Errorf("default args contain %q — that forces API billing instead of subscription auth", a)
+		}
+	}
+}

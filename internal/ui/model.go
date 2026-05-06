@@ -18,6 +18,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -541,6 +542,12 @@ type Model struct {
 	attachments  []string // files to attach to the next send (cleared after send)
 	pendingSend  *pendingSendData
 	presendFromI int // index into presendFroms() for the From field cycle
+
+	// AI handoff (pre-send `i`) — when active, shows a one-line input for the
+	// instruction that gets substituted into [ai].args via {prompt}. Empty
+	// input falls through to interactive mode (no substitution).
+	aiPromptActive bool
+	aiPromptInput  textinput.Model
 
 	// Reaction
 	reactionEmail    *imap.Email // email being reacted to
@@ -2096,7 +2103,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.openLinks = extractLinks(msg.body)
-		_ = loadEmailIntoReader(&m.reader, msg.email, msg.body, msg.attachments, m.openSpyPixels, m.openLinks, m.cfg.UI.Theme, m.width)
+		_ = loadEmailIntoReader(&m.reader, msg.email, msg.body, msg.attachments, m.openSpyPixels, m.openLinks, glamourStyleFor(m.cfg.UI.Theme), m.width)
 		m.state = stateReading
 		// Refresh inbox list if immediate mode, or start timer
 		if m.cfg.UI.MarkAsReadAfterSecs <= 0 {
@@ -4169,9 +4176,14 @@ func (m Model) openICSCmd() tea.Cmd {
 		m.status = "No calendar invite to open."
 		return nil
 	}
-	cmdName := strings.TrimSpace(m.cfg.Calendar.OpenCommand)
-	if cmdName == "" {
-		cmdName = "xdg-open"
+	// Split open_command on whitespace so configs like
+	// `open_command = "khal import"` exec the binary `khal` with arg
+	// `import`, not a literal binary named "khal import". Empty falls back
+	// to xdg-open. Quoted multi-word paths are not supported here — users
+	// who need that should symlink or wrap in a shell script.
+	cmdParts := strings.Fields(strings.TrimSpace(m.cfg.Calendar.OpenCommand))
+	if len(cmdParts) == 0 {
+		cmdParts = []string{"xdg-open"}
 	}
 
 	home, err := os.UserHomeDir()
@@ -4186,8 +4198,12 @@ func (m Model) openICSCmd() tea.Cmd {
 		m.isError = true
 		return nil
 	}
-	name := att.Filename
-	if name == "" {
+	// Path traversal hardening: filepath.Base() strips any directory
+	// components the sender may have stuck in Content-Disposition: filename
+	// (e.g. "../../../.bashrc" → ".bashrc"). The result is then joined under
+	// the cache dir so we can never write outside ~/.cache/neomd/ical/.
+	name := filepath.Base(att.Filename)
+	if name == "" || name == "." || name == "/" {
 		name = fmt.Sprintf("invite-%d.ics", time.Now().Unix())
 	}
 	dst := filepath.Join(dir, name)
@@ -4198,7 +4214,8 @@ func (m Model) openICSCmd() tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		if err := exec.Command(cmdName, dst).Start(); err != nil {
+		args := append(cmdParts[1:], dst)
+		if err := exec.Command(cmdParts[0], args...).Start(); err != nil {
 			return icsOpenedMsg{path: dst, err: err}
 		}
 		return icsOpenedMsg{path: dst}
@@ -4443,6 +4460,23 @@ func (m Model) updatePresend(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
+	// AI prompt input mode: typed when user pressed `i`. Enter submits
+	// (empty → interactive, non-empty → templated into [ai].args). Esc
+	// cancels back to the normal pre-send screen.
+	if m.aiPromptActive {
+		switch msg.String() {
+		case "esc":
+			m.aiPromptActive = false
+			return m, nil
+		case "enter":
+			prompt := strings.TrimSpace(m.aiPromptInput.Value())
+			m.aiPromptActive = false
+			return m.launchAIHandoffCmd(ps, prompt)
+		}
+		var cmd tea.Cmd
+		m.aiPromptInput, cmd = m.aiPromptInput.Update(msg)
+		return m, cmd
+	}
 	switch msg.String() {
 	case "enter":
 		m.loading = true
@@ -4493,15 +4527,22 @@ func (m Model) updatePresend(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Open in nvim with spell checking, cursor on first error.
 		return m.launchSpellCheckCmd(ps)
 	case "i":
-		// AI handoff: write draft to a temp file and spawn [ai].command. The
-		// command is typically `nvim` (so the user can drive Claude/Codex from
-		// inside the editor) or a CLI like `claude` invoked directly. Body
-		// changes round-trip back through editorDoneMsg.
+		// AI handoff: prompt for a one-line instruction, then spawn
+		// [ai].command. Empty input → interactive mode (no {prompt}
+		// substitution); a typed instruction (e.g. "fix grammar") gets
+		// templated into [ai].args via {prompt} so e.g. claude can run
+		// non-interactively as `claude -p "fix grammar" <draft>`.
 		if strings.TrimSpace(m.cfg.AI.Command) == "" {
 			m.status = "AI handoff: set [ai].command in config.toml (e.g. command = \"claude\")"
 			return m, nil
 		}
-		return m.launchAIHandoffCmd(ps)
+		ti := textinput.New()
+		ti.Placeholder = "fix grammar  (Enter to run · empty = interactive · esc to cancel)"
+		ti.CharLimit = 200
+		ti.Focus()
+		m.aiPromptInput = ti
+		m.aiPromptActive = true
+		return m, nil
 	case "d":
 		// Save to Drafts without sending.
 		return m, m.saveDraftCmd(m.presendIMAPClient(), m.presendFrom(), ps.to, ps.cc, ps.bcc, ps.subject, ps.body, m.attachments)
@@ -4593,7 +4634,13 @@ func (m Model) launchSpellCheckCmd(ps *pendingSendData) (tea.Model, tea.Cmd) {
 // spell-check flows: on exit, the file is re-parsed and the draft body is
 // replaced. The configured command receives the file path as its final
 // argument so e.g. `claude` or `codex` work the same as `nvim`.
-func (m Model) launchAIHandoffCmd(ps *pendingSendData) (tea.Model, tea.Cmd) {
+//
+// `prompt` is the optional one-line instruction the user typed after `i`.
+// Any `{prompt}` placeholder in [ai].args is replaced by it so non-interactive
+// CLIs can run directly, e.g. with [ai].args = ["-p", "{prompt}"] and
+// prompt = "fix grammar" the spawn becomes `claude -p "fix grammar" <file>`.
+// Empty prompt → no substitution → interactive mode (current behaviour).
+func (m Model) launchAIHandoffCmd(ps *pendingSendData, prompt string) (tea.Model, tea.Cmd) {
 	prelude := editor.Prelude(ps.to, ps.cc, ps.bcc, m.presendFrom(), ps.subject, "")
 	content := prelude + ps.body
 
@@ -4607,20 +4654,48 @@ func (m Model) launchAIHandoffCmd(ps *pendingSendData) (tea.Model, tea.Cmd) {
 	f.WriteString(content) //nolint
 	f.Close()
 
-	args := append([]string{}, m.cfg.AI.Args...)
-	args = append(args, tmpPath)
+	// Expand {prompt} and {file} placeholders. {file} is the basename only
+	// (claude/codex/aichat take files via prompt mention, not positional);
+	// the directory containing the file becomes the spawned command's cwd
+	// just below so the AI tool's built-in file-edit tool can reach it
+	// without --add-dir or absolute paths.
+	filename := filepath.Base(tmpPath)
+	args := make([]string, 0, len(m.cfg.AI.Args))
+	for _, a := range m.cfg.AI.Args {
+		hadPromptPlaceholder := strings.Contains(a, "{prompt}")
+		s := strings.ReplaceAll(a, "{prompt}", prompt)
+		s = strings.ReplaceAll(s, "{file}", filename)
+		// Empty input + arg that was just `{prompt}` → drop the arg so the
+		// spawn becomes `claude` rather than `claude ""`. (An arg that
+		// contained both `{prompt}` and `{file}`, like the default, is
+		// non-empty after {file} expansion and survives.)
+		if hadPromptPlaceholder && s == "" {
+			continue
+		}
+		args = append(args, s)
+	}
 	cmd := exec.Command(m.cfg.AI.Command, args...)
+	cmd.Dir = filepath.Dir(tmpPath)
 	m.state = stateCompose
 	draftBackups := m.cfg.UI.DraftBackups()
 	return m, tea.ExecProcess(cmd, func(execErr error) tea.Msg {
 		backupDraft(tmpPath, draftBackups)
 		defer os.Remove(tmpPath)
-		if execErr != nil {
-			return editorDoneMsg{err: execErr}
-		}
+		// Read the temp file regardless of exit code. AI CLIs typically exit
+		// non-zero on Ctrl+C (130 = SIGINT), and that's the documented "quit
+		// to return" path — treating it as an error would clear attachments
+		// and bounce the user back to the inbox via editorDoneMsg{err}. The
+		// file we wrote at launch is still there even if the tool exited
+		// cleanly without touching it; parsing then yields the original draft.
 		raw, readErr := os.ReadFile(tmpPath)
 		if readErr != nil {
-			return editorDoneMsg{err: readErr}
+			// Surface the exec error too if both happened — useful for
+			// diagnosing missing-binary cases ([ai].command typo).
+			err := readErr
+			if execErr != nil {
+				err = fmt.Errorf("%w (ai exec: %v)", readErr, execErr)
+			}
+			return editorDoneMsg{err: err}
 		}
 		pto, pcc, pbcc, pfrom, psubject, _ := editor.ParseHeaders(string(raw))
 		if pto == "" {
@@ -5328,7 +5403,11 @@ func (m Model) viewPresend() string {
 		}
 		b.WriteString("\n")
 	}
-	if m.status != "" {
+	if m.aiPromptActive {
+		// One-line instruction prompt active — replaces the help footer
+		// until the user submits (Enter) or cancels (Esc).
+		b.WriteString(styleInputLabel.Render("AI prompt:") + " " + m.aiPromptInput.View())
+	} else if m.status != "" {
 		b.WriteString(statusBar(m.status, m.isError))
 	} else {
 		if isListmonk {
@@ -5336,9 +5415,9 @@ func (m Model) viewPresend() string {
 		} else {
 			aiHint := ""
 			if strings.TrimSpace(m.cfg.AI.Command) != "" {
-				aiHint = fmt.Sprintf(" · i AI (%s, quit to return)", strings.Fields(m.cfg.AI.Command)[0])
+				aiHint = " · i AI (quit to return)"
 			}
-			b.WriteString(styleHelp.Render("  enter send · e edit · s spell · p preview" + aiHint + " · a attach · D remove attach · ctrl+f from · ctrl+b cc/bcc · d draft · esc cancel · x discard"))
+			b.WriteString(styleHelp.Render("  enter send · e edit · s spell · p preview · a attach · D remove attach" + aiHint + " · ctrl+f from · ctrl+b cc/bcc · d draft · esc cancel · x discard"))
 		}
 	}
 	return b.String()

@@ -104,3 +104,27 @@ func TestApplyTheme_DifferentThemesProduceDifferentStyles(t *testing.T) {
 	}
 	ApplyTheme("kanagawa", config.Theme{})
 }
+
+func TestGlamourStyleFor(t *testing.T) {
+	// Regression for review #201 finding 2: passing the new named-theme
+	// strings (kanagawa, rose-pine, …) directly into glamour silently
+	// falls back to "notty" which strips colours/wrapping. The mapper must
+	// always return one of glamour's built-in style names.
+	cases := map[string]string{
+		"kanagawa":       "dark",
+		"kanagawa-paper": "dark",
+		"kanagawa-light": "light",
+		"rose-pine":      "dark",
+		"gruvbox":        "dark",
+		"osaka-jade":     "dark",
+		"":               "dark", // empty config falls through to dark
+		"unknown-theme":  "dark", // unknown names also fall through, never to notty
+		"light":          "light", // legacy literal still respected
+		"auto":           "dark",  // legacy "auto" collapses to dark for predictability
+	}
+	for in, want := range cases {
+		if got := glamourStyleFor(in); got != want {
+			t.Errorf("glamourStyleFor(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

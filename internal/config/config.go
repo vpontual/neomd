@@ -113,19 +113,24 @@ type CalendarConfig struct {
 	OpenCommand string `toml:"open_command"` // default "xdg-open"
 }
 
-// AIConfig configures the pre-send "AI handoff" key (`i`). On press, neomd
+// AIConfig configures the pre-send "AI handoff" key (`i`). When pressed,
+// neomd shows a one-line prompt for an instruction (e.g. "fix grammar"),
 // writes the current draft to a temp markdown file with the standard
-// `# [neomd: ...]` headers, spawns `<command> [args...] <path>`, and re-reads
-// the file on exit so any changes round-trip back into the draft. Quit the
-// AI tool to return to neomd's pre-send screen.
+// `# [neomd: ...]` headers, spawns `<command> [args...]` with cwd set to
+// the file's directory, and re-reads the file on exit so any changes
+// round-trip back into the draft. Quit the AI tool to return.
 //
-// Default: `claude` (Claude Code CLI). The compose buffer is already in nvim
-// before pre-send, so spawning nvim again is pointless — pick a CLI that does
-// real work (claude, codex, aichat, sgpt, …). If `command` is empty the
-// binding is a no-op.
+// Two placeholders are substituted in args at spawn time:
+//   - `{prompt}` → the typed instruction (or empty for interactive mode)
+//   - `{file}`   → the draft's basename (cwd is set to its directory)
+//
+// Default args = ["edit {file}: {prompt}"]. With prompt "fix grammar" the
+// spawn is `claude "edit neomd-ai-XYZ.md: fix grammar"` (cwd /tmp/neomd) —
+// claude finds the file via cwd and edits in place. Set `command = ""` to
+// disable the binding.
 type AIConfig struct {
 	Command string   `toml:"command"`
-	Args    []string `toml:"args"` // optional extra args inserted before the file path
+	Args    []string `toml:"args"` // {prompt} and {file} placeholders are substituted
 }
 
 // NotificationsConfig controls desktop notifications for emails landing in
@@ -664,11 +669,20 @@ func defaults() *Config {
 			Signature:           "*sent from [neomd](https://neomd.ssp.sh)*",
 		},
 		AI: AIConfig{
-			// Default: hand off to Claude Code. The compose buffer is already
-			// open in nvim before pre-send, so spawning nvim again on `i` is
-			// pointless — drive Claude/Codex/etc. instead. Quit the AI tool
-			// (ctrl+c, q, /quit, ZZ, …) to return to neomd's pre-send screen.
+			// Default: hand off to Claude Code in **interactive** mode (not
+			// `-p` print mode, which would bill against Anthropic API credits
+			// instead of a Pro/Max subscription).
+			//
+			// `{prompt}` is the user's typed instruction. `{file}` is the
+			// basename of the temp draft. neomd sets the spawned command's
+			// cwd to the file's directory, so claude can reach the file
+			// natively via its Edit tool without --add-dir tricks.
+			//
+			// With this default, typing "fix grammar" at the AI prompt
+			// produces `claude "edit neomd-ai-XYZ.md: fix grammar"` (cwd
+			// set), and claude edits the file in place.
 			Command: "claude",
+			Args:    []string{"edit {file}: {prompt}"},
 		},
 	}
 }

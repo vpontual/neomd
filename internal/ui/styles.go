@@ -119,6 +119,21 @@ func init() {
 	ApplyTheme("kanagawa", config.Theme{})
 }
 
+// glamourStyleFor maps a neomd theme name to a glamour built-in style for
+// rendering email markdown in the reader. Glamour ships with a fixed set of
+// styles (`dark`, `light`, `auto`, `notty`, …); passing an unknown name
+// silently falls back to `notty` which strips colours and wrapping, so we
+// must translate. Light palettes → `light`; everything else (including the
+// pre-theme legacy values "dark"/"light"/"auto" and unknown names) →
+// `dark`. The legacy "auto" was rarely useful in practice and would now
+// be ambiguous, so we collapse it to `dark` for predictability.
+func glamourStyleFor(themeName string) string {
+	if themeName == "kanagawa-light" || themeName == "light" {
+		return "light"
+	}
+	return "dark"
+}
+
 // ApplyTheme switches the active palette and rebuilds the style vars. Pass an
 // override theme to mutate individual slots; empty fields fall through to the
 // named built-in. Unknown names fall back to kanagawa.
