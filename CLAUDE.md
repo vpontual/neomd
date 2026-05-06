@@ -15,6 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `make docs-build` — build Hugo docs site to `docs/public/`
 - `make send-test TO=addr` — run `./cmd/sendtest` to send a test email
 - `make demo` / `make demo-hp` — run with demo configs at `~/.config/neomd-demo/` and `~/.config/neomd-demo-hostpoint/`
+- `make daemon` — build and run headless (`./neomd --headless`); screener loop only, no TUI
 - `make benchmark` — IMAP latency benchmark (requires `IMAP_PASS_SIMU`, `IMAP_APPPASS_GMAIL_NEOMD` env vars)
 - `make android` — cross-compile ARM64 for Termux
 - `make release VERSION=v0.1.0` — tag and push a new release (runs docs build, GitHub Actions handles publishing)
@@ -73,6 +74,8 @@ Folder operations prefer RFC 6851 MOVE; `u` undo uses UIDPLUS destination UIDs c
 - `internal/mailtls/` — TLS/STARTTLS connection helpers
 - `internal/oauth2/` — OAuth2 flow for Gmail/Office365
 - `internal/calendar/` — iCalendar (.ics) parsing + iMIP RSVP reply construction (`arran4/golang-ical`); used by reader card and `<space> v {a|d|t}` chord
+- `internal/listmonk/` — Listmonk newsletter API client + `Trigger`/`ResolveListIDs` hook that maps recipient addresses to list IDs at compose time
+- `internal/notify/` — desktop notifications via `notify-send` for senders on the screener notify list. **TUI-only** (the headless daemon does not invoke it); 2 s `sendTimeout` keeps the bubbletea Update loop responsive
 - `internal/integration_test.go` — integration tests (live IMAP/SMTP); lives at package level, not in a sub-package
 
 **Spy pixel detection** (`internal/imap/tracker_list.go` + `client.go`): Two-layer approach — (1) curated denylist of 150+ tracking services in `KnownTrackers` with `IdentifyTracker()` for attribution ("Mailchimp", "HubSpot"); (2) generic 1×1 pixel heuristic via `detectSpyPixels()` on raw HTML. Results flow through `SpyPixelInfo` struct returned by `FetchBody()` and `ScanSpyPixels()`. Cached to `~/.cache/neomd/spy_pixels` (format: `+key` for spy, `-key` for scanned clean).

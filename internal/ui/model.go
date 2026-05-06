@@ -2521,8 +2521,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Strip editor header hints and extract [attach] lines.
 		// [html-signature] marker is NOT extracted yet — keep it in body for preview.
+		// The editor body is the source of truth: re-opening the editor (re-edit,
+		// spell-check, AI handoff, continueDraft) re-injects existing attachments
+		// as [attach] lines via appendAttachments, so a replace here is correct —
+		// append would duplicate them.
 		inlineAttach, cleanBody := extractInlineAttachments(stripPrelude(msg.body))
-		m.attachments = append(m.attachments, inlineAttach...)
+		m.attachments = inlineAttach
 		m.applyEditedFrom(msg.from)
 
 		// Go to pre-send review instead of sending immediately.
@@ -4321,7 +4325,9 @@ func (m Model) continueDraft() (tea.Model, tea.Cmd) {
 
 	// Build temp file with prelude + existing body.
 	// No signature — the draft body already contains it from the first compose.
-	prelude := editor.Prelude(to, cc, bcc, m.presendFrom(), subject, "")
+	// Re-inject saved attachments as # [attach] lines under the headers so the
+	// user sees them at a glance.
+	prelude := injectAttachmentsIntoPrelude(editor.Prelude(to, cc, bcc, m.presendFrom(), subject, ""), m.attachments)
 	body := m.openBody
 
 	f, err := os.CreateTemp(neomdTempDir(), "neomd-*.md")
@@ -4578,7 +4584,7 @@ func (m Model) updatePresend(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // enabled and the cursor positioned on the first misspelled word.
 // On return, the (possibly corrected) body replaces the pre-send body.
 func (m Model) launchSpellCheckCmd(ps *pendingSendData) (tea.Model, tea.Cmd) {
-	prelude := editor.Prelude(ps.to, ps.cc, ps.bcc, m.presendFrom(), ps.subject, "")
+	prelude := injectAttachmentsIntoPrelude(editor.Prelude(ps.to, ps.cc, ps.bcc, m.presendFrom(), ps.subject, ""), m.attachments)
 	content := prelude + ps.body
 
 	f, err := os.CreateTemp(neomdTempDir(), "neomd-*.md")
@@ -4641,7 +4647,7 @@ func (m Model) launchSpellCheckCmd(ps *pendingSendData) (tea.Model, tea.Cmd) {
 // prompt = "fix grammar" the spawn becomes `claude -p "fix grammar" <file>`.
 // Empty prompt → no substitution → interactive mode (current behaviour).
 func (m Model) launchAIHandoffCmd(ps *pendingSendData, prompt string) (tea.Model, tea.Cmd) {
-	prelude := editor.Prelude(ps.to, ps.cc, ps.bcc, m.presendFrom(), ps.subject, "")
+	prelude := injectAttachmentsIntoPrelude(editor.Prelude(ps.to, ps.cc, ps.bcc, m.presendFrom(), ps.subject, ""), m.attachments)
 	content := prelude + ps.body
 
 	f, err := os.CreateTemp(neomdTempDir(), "neomd-ai-*.md")
@@ -4814,6 +4820,9 @@ func (m Model) launchEditorCmd() (tea.Model, tea.Cmd) {
 	} else {
 		prelude = editor.Prelude(to, cc, bcc, m.presendFrom(), subject, sig)
 	}
+	// Re-inject attachments added via ctrl+t in the compose form so the
+	// editor body is the source of truth (editorDoneMsg replaces, not appends).
+	prelude = injectAttachmentsIntoPrelude(prelude, m.attachments)
 
 	// Write temp file
 	f, err := os.CreateTemp(neomdTempDir(), "neomd-*.md")
@@ -4871,7 +4880,7 @@ func (m Model) launchEditorCmd() (tea.Model, tea.Cmd) {
 // the pre-send screen). The prelude is built from the provided headers (no
 // signature — it is already in the body from the first compose).
 func (m Model) launchEditorWithBodyCmd(to, cc, bcc, subject, body string) (tea.Model, tea.Cmd) {
-	prelude := editor.Prelude(to, cc, bcc, m.presendFrom(), subject, "")
+	prelude := injectAttachmentsIntoPrelude(editor.Prelude(to, cc, bcc, m.presendFrom(), subject, ""), m.attachments)
 	content := prelude + body
 
 	f, err := os.CreateTemp(neomdTempDir(), "neomd-*.md")
@@ -5274,32 +5283,78 @@ func stripPrelude(body string) string {
 	return strings.Join(kept, "\n")
 }
 
-// extractInlineAttachments scans body for [attach] /path lines inserted by the
-// neomd Lua helper in neovim (<leader>a).
+// injectAttachmentsIntoPrelude inserts # [attach] /path lines into an existing
+// prelude string, right after the # [neomd: subject: …] line and before the
+// blank-line separator that ends the header block. The result groups
+// attachments visually with the other neomd headers so the user can see them
+// at a glance when (re-)opening the editor:
+//
+//	# [neomd: to: …]
+//	# [neomd: subject: …]
+//	# [attach] /path/file1.pdf
+//	# [attach] /path/file2.pdf
+//
+//	(body)
+//
+// Both `# [attach] ` and `[attach] ` (the form used by the <leader>a yazi
+// helper for inline placement, especially of images) are recognized by
+// extractInlineAttachments on save. No-op for an empty list.
+func injectAttachmentsIntoPrelude(prelude string, paths []string) string {
+	if len(paths) == 0 {
+		return prelude
+	}
+	idx := strings.Index(prelude, "\n\n")
+	if idx < 0 {
+		return prelude
+	}
+	var b strings.Builder
+	for _, p := range paths {
+		b.WriteString("# [attach] ")
+		b.WriteString(p)
+		b.WriteString("\n")
+	}
+	return prelude[:idx+1] + b.String() + prelude[idx+1:]
+}
+
+// extractInlineAttachments scans body for [attach] /path lines and removes
+// them, returning the file paths separately. Two forms are recognized:
+//   - "[attach] /path"   — used by the <leader>a yazi helper in neovim for
+//     inline placement (e.g. image positioned next to a paragraph).
+//   - "# [attach] /path" — used by injectAttachmentsIntoPrelude when
+//     re-opening the editor; visually grouped with the other neomd headers.
+//
+// For each path:
 //   - Image files (.png, .jpg, …) are converted to ![](path) markdown refs so
 //     goldmark renders them as <img> tags inline; the sender embeds them via CID.
 //   - Non-image files are returned as file attachment paths (appended at bottom).
 //
 // Returns (filePaths, cleanBody).
 func extractInlineAttachments(body string) (files []string, clean string) {
-	const prefix = "[attach] "
 	var kept []string
 	for _, line := range strings.Split(body, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, prefix) {
-			p := strings.TrimSpace(trimmed[len(prefix):])
-			if p == "" {
-				continue
-			}
-			if imageExts[strings.ToLower(filepath.Ext(p))] {
-				// Inline: replace with markdown image ref
-				kept = append(kept, "![]("+p+")")
-			} else {
-				files = append(files, p)
-			}
+		var rest string
+		switch {
+		case strings.HasPrefix(trimmed, "# [attach] "):
+			rest = strings.TrimSpace(trimmed[len("# [attach] "):])
+		case strings.HasPrefix(trimmed, "[attach] "):
+			rest = strings.TrimSpace(trimmed[len("[attach] "):])
+		default:
+			kept = append(kept, line)
 			continue
 		}
-		kept = append(kept, line)
+		if rest == "" {
+			continue
+		}
+		if imageExts[strings.ToLower(filepath.Ext(rest))] {
+			// Inline: replace with markdown image ref so position is preserved.
+			// Header-form "# [attach] /img" loses position (always at top), but
+			// images placed via <leader>a inline use plain "[attach] /img" and
+			// render where the user put them.
+			kept = append(kept, "![]("+rest+")")
+		} else {
+			files = append(files, rest)
+		}
 	}
 	return files, strings.Join(kept, "\n")
 }

@@ -176,6 +176,30 @@ And a PDF for reference:
 
 ![neomd](/images/attachments-example.webp)
 
+### Re-opening the editor: `# [attach]` header form
+
+When you bounce out of pre-send back into the editor (`e` to re-edit, `s` to spell-check, `i` to hand off to an AI tool), or continue a saved draft, attachments that were already tracked are re-injected at the **top** of the buffer — right under the other `# [neomd: ...]` headers — using a `#`-prefixed form:
+
+```markdown
+# [neomd: to: hello@sspaeti.com]
+# [neomd: bcc: simon.spaeti@gmail.com]
+# [neomd: from: Simon Späti <simu@sspaeti.com>]
+# [neomd: subject: Re: Website Banner Sponsorship]
+# [attach] /home/you/docs/services-overview.pdf
+# [attach] /home/you/docs/pricing.pdf
+
+Hi Luca,
+…
+```
+
+{{< callout type="info" >}}
+**Why two forms?** The `#`-prefixed form (`# [attach] /path`) is what neomd injects on re-open so attachments group visually with the rest of the metadata headers — your treesitter/render-markdown setup styles them as bold H1 headings, so they stand out. The plain form (`[attach] /path`) is what the `<leader>a` yazi helper inserts at the cursor, so you can still drop an image *inline* next to a paragraph and have it render in-place. Both are recognized; mix freely. The editor buffer is the source of truth — remove a `[attach]` line on save and that attachment is dropped.
+{{< /callout >}}
+
+{{< callout type="info" >}}
+**Saved drafts: paths are `/tmp/neomd/draft-<name>-<random>`.** When you continue a draft from the Drafts folder (`E`), neomd re-extracts the saved attachment MIME parts to `/tmp/neomd/` and uses those temp paths in the re-injected `# [attach]` lines. This keeps the drafts loop closed even after the original local files moved or were deleted. If you'd rather attach the *current* version of those files, replace the temp paths with the originals before saving.
+{{< /callout >}}
+
 ## Pre-send Review
 
 After saving and closing the editor, neomd shows a review screen before sending — add or remove attachments, save to Drafts, or re-open the editor without sending accidentally.
@@ -190,9 +214,39 @@ After saving and closing the editor, neomd shows a review screen before sending 
 | `D` | remove last attachment |
 | `d` | save to Drafts (IMAP APPEND with `\Draft` flag) |
 | `e` | re-open editor |
+| `s` | re-open editor with nvim spell-check on, cursor on first error |
+| `i` | hand off to an external AI tool (see [AI Handoff](#ai-handoff) below) |
 | `esc` | cancel |
 
 Press `p` to see exactly what the recipient will see — the email is rendered through the same goldmark Markdown-to-HTML pipeline used for sending. Local image paths from `[attach]` lines are converted to `file://` URLs so the browser displays them inline.
+
+## AI Handoff
+
+Press `i` on the pre-send screen to hand the current draft off to an external AI CLI (`claude`, `codex`, `aichat`, `sgpt`, …). neomd will:
+
+1. Show a one-line prompt for your instruction (e.g. `fix grammar`, `make it more formal`, `tighten this`).
+2. Write the current draft to a temp markdown file with the standard `# [neomd: ...]` headers.
+3. Spawn `<command> [args...] <file>` (with `{prompt}` and `{file}` placeholders substituted in `args`). The spawned process's working directory is set to the temp dir holding the draft, so e.g. claude's built-in Edit tool can reach the file with no `--add-dir`.
+4. Re-read the file on exit and replace your draft body — the same parser as the regular editor flow, so headers the AI may have rewritten (To, Cc, Bcc, Subject) are picked up automatically.
+
+This is how it looks
+![neomd](/images/ai-integration.png)
+
+**Prompt modes:**
+
+- **Empty prompt + Enter** — interactive mode. `{prompt}` is replaced by `""`, so the default `args = ["edit {file}: {prompt}"]` becomes `claude "edit neomd-ai-XYZ.md: "` and you continue the conversation inside the AI tool.
+- **Typed instruction + Enter** — non-interactive: `claude "edit neomd-ai-XYZ.md: fix grammar"`. The tool edits the file and exits.
+- **Esc** — cancel and return to pre-send.
+
+Quit the AI tool (`ctrl+c`, `q`, `/quit`, `ZZ`, …) to return to neomd's pre-send screen with the edits picked up.
+
+{{< callout type="warning" >}}
+**Default args use the *interactive* form, not `claude -p`.** The `-p` (print) flag in Claude Code is non-interactive and bills against your **API credits** rather than your Claude Pro/Max subscription — it leaks money even when you're paying for a plan. Interactive mode runs under your subscription auth. Only switch to `args = ["-p", "edit {file}: {prompt}"]` if you have an API key with credits and explicitly want the scripted, no-review flow.
+{{< /callout >}}
+
+`nvim` is intentionally **not** a useful default here — the compose buffer is already open in nvim before pre-send, so spawning nvim on `i` would just re-edit. You can already use [avante.nvim](https://github.com/yetone/avante.nvim) or similar inside the composer for in-editor AI; the `i` handoff is for picking a *different* tool. Set `[ai].command = ""` to disable the binding entirely.
+
+For configuration (`[ai].command`, `[ai].args`, placeholders), see [Configuration → AI handoff](configuration#ai-handoff-pre-send-i-key).
 
 ## Drafts
 

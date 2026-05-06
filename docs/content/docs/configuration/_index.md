@@ -365,14 +365,7 @@ Workflow + caveats (sending an iMIP REPLY ≠ importing into your calendar) are 
 
 ## AI handoff (pre-send `i` key)
 
-`[ai]` wires any external CLI to the pre-send `i` key. neomd:
-
-1. Shows a one-line prompt for your instruction (e.g. `fix grammar`, `make it more formal`, `tighten this`).
-2. Writes the current draft to a temp markdown file (with the same `# [neomd: ...]` headers used during compose).
-3. Spawns the command with the file path appended as the last arg. Any `{prompt}` token in `args` is replaced by what you typed.
-4. Re-reads the file on exit so the AI's edits replace your draft body.
-
-Press Enter on an empty prompt to run interactively (no `{prompt}` substitution); type an instruction + Enter to run non-interactively; press Esc to cancel. Quit the AI tool (`ctrl+c`, `q`, `/quit`, `ZZ`, …) to return to neomd's pre-send screen.
+The `[ai]` block configures the external CLI that pre-send `i` hands the draft off to. The full workflow (prompt modes, return path, the `claude -p` warning) lives in [Sending → AI Handoff](../sending/#ai-handoff) — this section just covers the config surface.
 
 ```toml
 [ai]
@@ -382,17 +375,12 @@ args    = ["edit {file}: {prompt}"]     # default: tells claude what file + what
 # command = "aichat"
 ```
 
-Two placeholders are substituted at spawn time: `{prompt}` becomes your typed instruction, `{file}` becomes the draft's basename. neomd also sets the spawned process's working directory to the temp dir holding the draft, so claude's built-in Edit tool reaches the file natively (no `--add-dir` needed).
+**Placeholders** substituted at spawn time:
 
-If you type `fix grammar` at the prompt, the spawn is `claude "edit neomd-ai-XYZ.md: fix grammar"` running in `/tmp/neomd/`. Claude opens interactively, sees the file in cwd, edits in place, you `/quit` when satisfied, neomd picks up the changes.
+- `{prompt}` — what you typed at the pre-send prompt (empty string if you hit Enter without typing). If an arg consists *only* of `{prompt}` and the prompt is empty, the arg is dropped so the spawn is `claude` rather than `claude ""`.
+- `{file}` — the draft's basename (not the full path). neomd sets the spawned process's `cwd` to the temp dir holding the draft, so claude's built-in Edit tool reaches the file natively without `--add-dir`.
 
-> [!IMPORTANT]
-> Default args use the **interactive** form, not `claude -p`. The `-p` (print) flag in Claude Code is non-interactive and bills against your **API credits** rather than your Claude Pro/Max subscription — it leaks money even when you're paying for a plan. Interactive mode runs under your subscription auth. Only switch to `args = ["-p", "edit {file}: {prompt}"]` if you have an API key with credits and explicitly want the scripted, no-review flow.
-
-If you press Enter on an empty prompt, only the `{prompt}` placeholder is replaced (with `""`) — the resulting `"edit neomd-ai-XYZ.md: "` still tells claude which file to look at, so claude opens interactively in the temp dir with that file pre-mentioned and waits for your follow-up instruction.
-
-`nvim` is intentionally **not** the default: the compose buffer is already open in nvim before pre-send, so spawning nvim on `i` would just re-edit. You can already use [avante.nvim](https://github.com/yetone/avante.nvim) or others within neovim composer to do any AI you'd like. 
-But instead, pick a tool that does work. The handoff reuses the same parser as the regular editor flow, so headers (To, Cc, Bcc, Subject) the AI tool may rewrite are picked up automatically. If `command` is empty the `i` key is a no-op.
+`args` is the *complete* arg list — neomd does not auto-append the file path. Reference `{file}` somewhere in `args` if your tool needs the filename (the default `["edit {file}: {prompt}"]` does this inside a single instruction string for claude). Set `command = ""` to disable the `i` key entirely.
 
 ## OAuth2 Authentication
 
