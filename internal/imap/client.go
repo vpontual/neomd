@@ -269,6 +269,141 @@ func (c *Client) Ping(ctx context.Context) error {
 	})
 }
 
+// MailboxInfo summarizes one mailbox returned by LIST.
+type MailboxInfo struct {
+	Name     string
+	Delim    rune
+	Attrs    []imap.MailboxAttr
+	Total    uint32 // 0 if STATUS not supported / not selectable
+	Unseen   uint32
+	Selectable bool
+}
+
+// ListMailboxes returns every mailbox visible on the server, with per-folder
+// total and unseen counts when the server returns STATUS data.
+func (c *Client) ListMailboxes(ctx context.Context) ([]MailboxInfo, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var out []MailboxInfo
+	err := c.withConn(ctx, func(conn *imapclient.Client) error {
+		out = nil
+		opts := &imap.ListOptions{
+			ReturnStatus: &imap.StatusOptions{
+				NumMessages: true,
+				NumUnseen:   true,
+			},
+		}
+		cmd := conn.List("", "*", opts)
+		mailboxes, err := cmd.Collect()
+		if err != nil {
+			return fmt.Errorf("LIST: %w", err)
+		}
+		for _, data := range mailboxes {
+			info := MailboxInfo{
+				Name:       data.Mailbox,
+				Delim:      data.Delim,
+				Attrs:      data.Attrs,
+				Selectable: true,
+			}
+			for _, a := range data.Attrs {
+				if a == imap.MailboxAttrNoSelect || a == imap.MailboxAttrNonExistent {
+					info.Selectable = false
+				}
+			}
+			if data.Status != nil {
+				if data.Status.NumMessages != nil {
+					info.Total = *data.Status.NumMessages
+				}
+				if data.Status.NumUnseen != nil {
+					info.Unseen = *data.Status.NumUnseen
+				}
+			}
+			out = append(out, info)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+// SearchUIDsOlderThan returns UIDs of messages in folder with internal date
+// strictly before cutoff. Uses UID SEARCH BEFORE.
+func (c *Client) SearchUIDsOlderThan(ctx context.Context, folder string, cutoff time.Time) ([]uint32, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var uids []uint32
+	err := c.withConn(ctx, func(conn *imapclient.Client) error {
+		uids = nil
+		if err := c.selectMailbox(folder); err != nil {
+			return err
+		}
+		searchData, err := conn.UIDSearch(&imap.SearchCriteria{Before: cutoff}, nil).Wait()
+		if err != nil {
+			return fmt.Errorf("UID SEARCH BEFORE: %w", err)
+		}
+		set, ok := searchData.All.(imap.UIDSet)
+		if !ok {
+			return nil
+		}
+		raw, _ := set.Nums()
+		uids = make([]uint32, len(raw))
+		for i, u := range raw {
+			uids[i] = uint32(u)
+		}
+		return nil
+	})
+	return uids, err
+}
+
+// BulkMove moves a set of UIDs from src to dst in one IMAP MOVE command.
+// Returns the number of messages moved (best-effort — server may emit COPYUID
+// reporting destination UIDs which we don't track here).
+func (c *Client) BulkMove(ctx context.Context, src, dst string, uids []uint32) (int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if len(uids) == 0 {
+		return 0, nil
+	}
+	moved := 0
+	err := c.withConn(ctx, func(conn *imapclient.Client) error {
+		if err := c.selectMailbox(src); err != nil {
+			return err
+		}
+		set := imap.UIDSetNum()
+		for _, u := range uids {
+			set.AddNum(imap.UID(u))
+		}
+		if _, err := conn.Move(set, dst).Wait(); err != nil {
+			return fmt.Errorf("UID MOVE: %w", err)
+		}
+		moved = len(uids)
+		return nil
+	})
+	return moved, err
+}
+
+// DeleteMailbox removes a mailbox on the server. Most servers refuse if the
+// mailbox is not empty.
+func (c *Client) DeleteMailbox(ctx context.Context, name string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return c.withConn(ctx, func(conn *imapclient.Client) error {
+		// Drop our cached selection if we had this mailbox open.
+		if c.selectedMailbox == name {
+			c.selectedMailbox = ""
+			_ = conn.Unselect().Wait()
+		}
+		return conn.Delete(name).Wait()
+	})
+}
+
 // FetchHeaders fetches the latest n message summaries from folder.
 func (c *Client) FetchHeaders(ctx context.Context, folder string, n int) ([]Email, error) {
 	if ctx == nil {
