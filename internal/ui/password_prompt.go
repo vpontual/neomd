@@ -47,11 +47,14 @@ func (p *passwordPromptModel) reset() {
 }
 
 // setPrompt configures the prompt for a specific account and type.
+// reset() runs first so it clears the previous session's input/error before
+// we assign the new errMsg — otherwise the error passed in here would be
+// wiped immediately by reset() and never displayed.
 func (p *passwordPromptModel) setPrompt(account string, pt promptType, errMsg string) {
+	p.reset()
 	p.account = account
 	p.promptType = pt
 	p.errMsg = errMsg
-	p.reset()
 }
 
 // passwordSubmittedMsg is sent when the user submits a password.
